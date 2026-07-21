@@ -1,0 +1,35 @@
+name: Run Football Scraper
+
+# กำหนดเวลาให้มันรันอัตโนมัติ (ตั้งเวลาตาม UTC)
+on:
+  schedule:
+    # ตัวอย่างนี้ตั้งให้รันทุกๆ 3 ชั่วโมง (สามารถเปลี่ยนได้ตามต้องการ)
+    - cron: '0 */3 * * *'
+  
+  # อนุญาตให้กดรันเองด้วยมือจากหน้าเว็บ GitHub ได้ด้วย
+  workflow_dispatch:
+
+jobs:
+  run-python-script:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # ดึงโค้ดล่าสุดจาก Repository มาลงในเครื่องจำลอง
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ติดตั้ง Python บนเครื่องจำลองของ GitHub
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # ติดตั้งไลบรารีที่จำเป็น (ถ้าสคริปต์ของคุณต้องใช้ requests, beautifulsoup4 ฯลฯ ให้ใส่เพิ่มตรงนี้ได้)
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # pip install requests beautifulsoup4
+
+      # สั่งรันไฟล์ main.py
+      - name: Run script
+        run: python main.py
