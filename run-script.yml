@@ -1,0 +1,33 @@
+name: Run Football Scraper
+
+# รันอัตโนมัติทุก 2 ชม. = 12 ครั้ง/วัน (Gemini ฟรีจำกัด 20 ครั้ง/วัน — เดิม 24/วันเกินโควตา)
+on:
+  schedule:
+    - cron: '5 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-python-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 google-genai
+
+      # ⭐ สำคัญ: ส่ง Secrets เข้าไปให้ main.py (ของเดิมขาดบล็อกนี้ → รันแล้ว error ทุกครั้ง)
+      - name: Run script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+        run: python main.py
