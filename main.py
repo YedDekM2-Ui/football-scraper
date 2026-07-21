@@ -1,7 +1,12 @@
 import os
+import time
 import requests
 from bs4 import BeautifulSoup
 from google import genai
+
+# Forebet มี Cloudflare บล็อก IP ดาต้าเซนเตอร์ (GitHub/Google) → ดึงผ่าน Jina Reader (ฟรี คืน text สะอาด)
+JINA_PREFIX = "https://r.jina.ai/"
+JINA_API_KEY = os.environ.get("JINA_API_KEY", "")  # ไม่ใส่ก็ได้ (ลิมิต ~20/นาที) · ใส่แล้วลิมิตสูงขึ้น
 
 # ==========================================
 # 1. ดึงค่าความลับจาก Environment Variables
@@ -93,17 +98,19 @@ def send_telegram_message(text):
 # 4. ดึงข้อมูลจากเว็บไซต์ (Scraper)
 # ==========================================
 def scrape_football_data(url):
+    reader_url = JINA_PREFIX + url
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
+    if JINA_API_KEY:
+        headers["Authorization"] = "Bearer " + JINA_API_KEY
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(reader_url, headers=headers, timeout=60)
         if response.status_code != 200:
-            print(f"❌ โหลดหน้าเว็บไม่สำเร็จ (Status: {response.status_code}) สำหรับ URL: {url}")
+            print(f"❌ ดึงผ่าน Reader ไม่สำเร็จ (Status: {response.status_code}) สำหรับ URL: {url}")
             return None
-        soup = BeautifulSoup(response.text, "html.parser")
-        content = soup.get_text(separator="\n", strip=True)
-        return content[:15000]
+        content = response.text
+        return content[:15000] if content.strip() else None
     except Exception as e:
         print(f"❌ Error ในการดึงเว็บ {url}: {e}")
         return None
@@ -167,6 +174,7 @@ def main():
             all_results += f"📊 *ผลวิเคราะห์คู่ที่ {index}*\n{analysis}\n\n-------------------\n\n"
         else:
             all_results += f"⚠️ *คู่ที่ {index}*: ไม่สามารถดึงข้อมูลจากลิงก์นี้ได้\n\n-------------------\n\n"
+        time.sleep(3)  # กันชนลิมิต Jina (~20/นาที)
 
     if all_results:
         print("📲 กำลังส่งสรุปผลเข้า Telegram...")
