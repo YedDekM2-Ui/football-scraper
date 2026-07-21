@@ -22,6 +22,8 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 
 TELEGRAM_LIMIT = 4000  # เผื่อจากเพดานจริง 4096
 MAX_MATCHES = 10       # คัดคู่เด่นสูงสุดกี่คู่ (แล้วแต่วัน บางวันน้อยกว่าได้)
+# รุ่น Gemini (ฟรี) — ลองไล่จากบนลงล่าง · gemini-flash-latest = alias ชี้รุ่นล่าสุดเสมอ กันโดนปลดรุ่น
+GEMINI_MODELS = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
 
 # ==========================================
 # 2. เช็คสถานะเสียง (sticky · ค่าเริ่มต้น = เงียบ จนกว่าจะกดเปิด)
@@ -143,8 +145,19 @@ def analyze_with_gemini(raw_text):
 ข้อมูลดิบ (หลายตลาดรวมกัน):
 {raw_text}
 """
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-        return response.text
+        last_err = None
+        for model in GEMINI_MODELS:
+            try:
+                response = client.models.generate_content(model=model, contents=prompt)
+                if response.text:
+                    print(f"🤖 ใช้รุ่น {model}")
+                    return response.text
+            except Exception as em:
+                last_err = em
+                print(f"⚠️ รุ่น {model} ใช้ไม่ได้: {em}")
+                continue
+        print(f"❌ Gemini ล้มทุกรุ่น: {last_err}")
+        return "เกิดข้อผิดพลาดในการวิเคราะห์ข้อมูลด้วย AI"
     except Exception as e:
         print(f"❌ Error ในการเรียก Gemini AI: {e}")
         return "เกิดข้อผิดพลาดในการวิเคราะห์ข้อมูลด้วย AI"
