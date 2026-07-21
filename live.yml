@@ -1,0 +1,34 @@
+name: Live Football Alerts
+
+# 🔻 พับไว้ก่อน (21 ก.ค.) — Live กิน Gemini ทุก 10 นาที = 144/วัน เกินโควตาฟรี 20/วัน
+# เอา cron ออก + workflow ถูก disable ไว้ · รอมี bot/Gemini key แยก ค่อยเปิดคืน
+# (โค้ด live.py ยังอยู่ครบ · จะเปิดต้อง enable workflow + คืน cron)
+on:
+  workflow_dispatch:
+
+# ห้ามบอลสดรันซ้อนกัน (กด /บอลสด + cron ทุก 10 นาที + manual ไม่สแตก) — ตัวใหม่ยกเลิกตัวเก่า
+concurrency:
+  group: live-alerts
+  cancel-in-progress: true
+
+jobs:
+  run-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-genai
+      - name: Run live
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+        run: python live.py
