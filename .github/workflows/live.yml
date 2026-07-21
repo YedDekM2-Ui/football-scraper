@@ -1,0 +1,29 @@
+name: Live Football Alerts
+
+# บอลสด — เช็คถี่กว่า (ทุก 20 นาที) · ไม่มีแมตช์เข้าเกณฑ์ = ไม่ส่ง (กันสแปม)
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-genai
+      - name: Run live
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+        run: python live.py
