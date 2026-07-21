@@ -95,7 +95,31 @@ def _clean(text):
     t = text.strip()
     if not t or t.startswith(("BAD_URL", "FETCH_ERR", "HTTP_")):
         return None
-    return t[:15000]
+    return t
+
+def _compact(raw):
+    """ตัด boilerplate (โลโก้/เมนู/รูป/อุณหภูมิ/ตัวเลขลอย) ออก เก็บแต่คู่+prob+ทีเด็ด+เหตุผล
+       → 20+ ตลาดยัดเข้า Gemini ได้ครบ ไม่โดนตัด"""
+    out, blank = [], False
+    for l in raw.splitlines():
+        s = l.strip()
+        if not s:
+            if not blank:
+                out.append(""); blank = True
+            continue
+        blank = False
+        if s.startswith("![Image") or s.startswith("[![Image"):
+            continue
+        if re.match(r'^\[[^\]]+\]\(https?://[^)]+\)\S*$', s) and "/matches/" not in s:
+            continue  # ลิงก์ nav/เมนูภาษา (เก็บลิงก์ /matches/ ที่มีชื่อคู่)
+        if "°" in s:
+            continue  # สภาพอากาศ
+        if re.match(r'^[+-]?\d+(?:\.\d+)?$', s):
+            continue  # ตัวเลขลอย (avg goals / coef อเมริกัน)
+        if s in ("no", "yes", "-", "no no no"):
+            continue
+        out.append(s)
+    return "\n".join(out)
 
 def scrape_football_data(url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
@@ -171,11 +195,19 @@ def parse_ah_table(raw):
                 break
         if not side:      # Forebet ยังไม่ออกเรทคู่นี้ → ข้าม (จะไม่มีเส้นให้มั่ว)
             continue
-        rows.append(f"{tm} | {names} | ฝั่งต่อ={side} เส้น={line} | เชื่อมั่น {prob}%")
+        # วันบอลนับ 10:00 → 09:59 เช้าวันถัดไป = วันเดียว → คู่ดึกข้ามเที่ยงคืน (ตี1-9) อยู่ท้ายลิสต์
+        try:
+            h, mm = map(int, tm.split(":"))
+            order = (h * 60 + mm - 600) % 1440   # 10:00=0 ... 09:59=1439
+        except Exception:
+            order = 9999
+        rows.append((order, f"{tm} | {names} | ฝั่งต่อ={side} เส้น={line} | เชื่อมั่น {prob}%"))
     if not rows:
         return ""
+    rows.sort(key=lambda r: r[0])
     return ("===ตารางราคาแฮนดิแคปจริงจาก Forebet (แหล่งเดียวของเส้น HDP+เวลา · ใช้ตรงนี้เท่านั้น)===\n"
-            + "\n".join(rows))
+            "(เวลาไทยแล้ว · วันบอลนับ 10:00 ถึง 09:59 เช้าวันถัดไป = วันเดียวกัน · เรียงตามเวลาเตะจริง)\n"
+            + "\n".join(r[1] for r in rows))
 
 # ==========================================
 # 5. วิเคราะห์ + คัดคู่เด่น 1-10 ด้วย Gemini (เงื่อนไข Football Live Analyst)
@@ -191,7 +223,7 @@ def analyze_with_gemini(raw_text, ah_table=""):
 2. รูปแบบคำแนะนำ (ใช้คำเหล่านี้เท่านั้น): 'เยือนไม่แพ้', 'บ้านไม่แพ้', 'เสมอ', 'หาผู้ชนะ'
    🚫 **ห้ามมั่วเส้น HDP เด็ดขาด** — เส้นแฮนดิแคป (เช่น -0.75, +0.25, -1.5) ต้องก๊อปตรงจาก "ตารางราคาแฮนดิแคปจริง" ด้านบนเท่านั้น (จับคู่ด้วยชื่อทีม) · ฝั่งต่อ (Home/Away) ก็ยึดตามตาราง · ถ้าคู่ไหนไม่มีในตาราง = **ใส่แค่คำแนะนำ ไม่ต้องมีเส้น** ห้ามเดา ห้ามเขียน "+0.5" ลอยๆ ห้ามเขียนคำว่า "Asian handicap"/"HDP" แทนตัวเลข
 3. เกณฑ์ดาว: 4 ดาว (80-99%), 3.5 ดาว (65-79%), 3 ดาว (50-64%) · เรียง 4 ดาวไว้บนสุด
-4. ยึด 'บอลวันนี้' เป็นหลัก + เสริมด้วย 'TOP Predictions'
+4. ประเมินข้ามทุกตลาดที่ให้มา (1x2, สูง/ต่ำ, ครึ่งแรก, HT/FT, ทั้งคู่ยิง, Double Chance, AH, Corners, Scorers ฯลฯ) — **คู่ที่หลายตลาดชี้ตรงกัน = มั่นใจสูง เรียงบน** · ตลาดขัดกันเอง/ชี้คนละทาง = ลดดาวหรือข้าม · ยึด 'บอลวันนี้' + 'TOP Predictions' เป็นหลัก
 5. กระชับ อ่านบนมือถือง่าย เหมาะส่ง Telegram (ระบบมีปุ่มเปิด/ปิดเสียงให้แล้ว ไม่ต้องเขียนปุ่มเอง)
 
 รูปแบบผลลัพธ์ (ทำตามนี้เป๊ะ · ภาษาไทย):
@@ -267,9 +299,9 @@ def main():
         if raw:
             ok += 1
             label = url.rstrip("/").split("/")[-1]
-            combined += f"\n\n===== ตลาด: {label} =====\n{raw}"
+            combined += f"\n\n===== ตลาด: {label} =====\n{_compact(raw)}"
             if "asian-handicap" in url:
-                ah_raw = raw
+                ah_raw = raw   # เก็บดิบไว้ให้ parser (ก่อน compact)
         time.sleep(3)  # กันชนลิมิต
 
     ah_table = parse_ah_table(ah_raw)
@@ -281,7 +313,8 @@ def main():
         return
 
     print(f"🤖 รวม {ok}/{len(urls)} ตลาด → ให้ Gemini คัดคู่เด่น 1-{MAX_MATCHES}...")
-    result = analyze_with_gemini(combined[:120000], ah_table)  # ตารางราคาจริง = แหล่งเส้น HDP+เวลา
+    print(f"📦 ข้อมูลรวมหลัง compact: {len(combined):,} ตัวอักษร (~{len(combined)//4:,} tokens)")
+    result = analyze_with_gemini(combined[:1200000], ah_table)  # cap ~300K tokens รับ 20+ ตลาด (Gemini flash context 1M)
 
     # แยกส่วน DATA (JSON สำหรับบันทึกชีต) ออกจากข้อความที่ส่ง Telegram
     tips_raw = None
