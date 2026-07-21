@@ -19,7 +19,12 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 
 TELEGRAM_LIMIT = 4000
 GEMINI_MODELS = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
-LIVE_URL = "https://www.forebet.com/en/live-football-tips"
+LIVE_MIN_PCT = 70   # แจ้งเฉพาะสัญญาณ % ≥ ค่านี้ (สัญญาณแรง)
+LIVE_SOURCES = [
+    "https://www.forebet.com/en/live-football-tips",                                                # สกอร์สด/นาที/สถานะ
+    "https://www.forebet.com/en/football-tips-and-predictions-for-today/double-chance-predictions",  # ค่า "ไม่แพ้" (1X/X2)
+    "https://www.forebet.com/en/football-tips-and-predictions-for-today/predictions-under-over-goals",# ค่า สูง/ต่ำ
+]
 
 # ---------- สถานะเสียง (sticky · default เงียบ) ----------
 def get_sound_on():
@@ -109,8 +114,10 @@ def analyze_live(raw_text):
 
 ข้อมูลด้านล่าง = หน้า "บอลสด" ของ Forebet (มีสกอร์สด นาที และผลคาดการณ์)
 
+แหล่งข้อมูล: หน้า live = สกอร์สด/นาที/สถานะ · ตลาด double-chance = ค่า "ไม่แพ้" (บ้านไม่แพ้=1X, เยือนไม่แพ้=X2) · ตลาด over/under = ค่าสูง/ต่ำ · จับคู่ด้วยชื่อทีม
+
 กติกา (ทำตามเป๊ะ):
-1. เลือกเฉพาะแมตช์ที่ "กำลังแข่งอยู่" (มีสกอร์สด/นาที) และเรทน่าสนใจเท่านั้น (⭐ ≥ 3)
+1. เลือกเฉพาะแมตช์ที่ "กำลังแข่งอยู่" (มีสกอร์สด/นาที) และ **% ความมั่นใจ ≥ 70% เท่านั้น (สัญญาณแรง)** — ต่ำกว่านี้ไม่ต้องแจ้ง
 2. สถานะพิเศษ: ถ้าเจอ 'เลื่อน' / 'เกมหยุด' → หักคะแนน + ขึ้นป้ายตัวหนา  ⚠️ **[สถานะพิเศษ: บอลเลื่อน/หยุด]**
 3. เรตติ้งดาว: ⭐4 (80-99%) จัดบนสุดเสมอ · ⭐3.5 (65-79%) · ⭐3 (50-64%)
 4. คำแนะนำผล 1X2 ใช้ 4 คำนี้เท่านั้น: 'เยือนไม่แพ้' / 'บ้านไม่แพ้' / 'เสมอ' / 'หาผู้ชนะ' + พ่วง HDP
@@ -118,17 +125,16 @@ def analyze_live(raw_text):
 5. [วงเล็บ] ครอบทีมที่เป็นต่อ (น้ำน้อยกว่า) — เป็นข้อมูลบอกใครต่อ ไม่ใช่คำสั่งเล่น
 6. **ถ้าตอนนี้ไม่มีแมตช์สดเข้าเกณฑ์เลย ให้ตอบแค่คำเดียวว่า:  NONE**  (ห้ามมีข้อความอื่น)
 
-รูปแบบ (เรียงดาวมากสุดบน · คั่นแต่ละคู่ด้วย ---------------------------):
+รูปแบบ (เรียง % มากสุดบน · คั่นแต่ละคู่ด้วย ---------------------------) กระชับ:
 ⚽ ทีเด็ดบอลสด
 ---------------------------
-N. เจ้าบ้าน พบ [ทีมที่เป็นต่อ] ({{ลีก}})
-⏱️ นาที X · สกอร์ H-A
-🎯 คำแนะนำ + HDP/Over
+N. เจ้าบ้าน  H - A  เยือน   (นาที X')
+🎯 <คำแนะนำ 1X2: เยือนไม่แพ้/บ้านไม่แพ้/เสมอ/หาผู้ชนะ> · <ลุ้นสูง/ลุ้นต่ำ เส้น X ถ้ามี>
 ⭐ X ดาว (YY%)
-📌 เหตุผลสด (เวลาเหลือ/ใบแดง/แรงกดดัน)
-📊 Forebet คาด: <ผลคาดการณ์เดิม>
+📊 Forebet: <ผลเดิม>
 ---------------------------
 
+ตัวอย่าง:  แมนยู 1 - 0 เชลซี (นาที 63')  →  🎯 เยือนไม่แพ้ · ลุ้นสูง 2.5
 ห้ามมีเกริ่นนำ/ปิดท้าย
 ข้อมูลดิบ:
 {raw_text}
@@ -145,12 +151,18 @@ N. เจ้าบ้าน พบ [ทีมที่เป็นต่อ] ({{
     return "NONE"
 
 def main():
-    print("🚀 บอลสด: ดึงหน้า live...")
-    raw = scrape(LIVE_URL)
-    if not raw:
-        print("⚠️ ดึงหน้าบอลสดไม่ได้ (ไม่ส่ง)")
+    print("🚀 บอลสด: ดึงหลายแหล่ง (live + double-chance + over/under)...")
+    combined = ""
+    for u in LIVE_SOURCES:
+        d = scrape(u)
+        if d:
+            label = u.rstrip("/").split("/")[-1]
+            combined += f"\n\n===== {label} =====\n{d}"
+        time.sleep(2)
+    if not combined.strip():
+        print("⚠️ ดึงข้อมูลบอลสดไม่ได้ (ไม่ส่ง)")
         return
-    result = analyze_live(raw).strip()
+    result = analyze_live(combined[:80000]).strip()
     if not result or result.upper().startswith("NONE") or len(result) < 40:
         print("⏸️ ตอนนี้ไม่มีบอลสดเข้าเกณฑ์ (ไม่ส่ง)")
         return
