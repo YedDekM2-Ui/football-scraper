@@ -176,7 +176,7 @@ def parse_ah_table(raw):
         return ""
     lines = [l.strip() for l in raw.splitlines()]
     link_re = re.compile(r'^\[(.+?)\s+(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\]\(https://www\.forebet\.com/en/football/matches/([a-z0-9-]+?)-\d+\)$')
-    pick_re = re.compile(r'^(Home|Away|Draw)\s+([+-]?\d+(?:\.\d+)?)\s+\d+-\d+$')
+    pick_re = re.compile(r'^(Home|Away|Draw)\s+([+-]?\d+(?:\.\d+)?)\s+(\d+-\d+)$')
     prob_re = re.compile(r'^(\d{1,3})%$')
     rows = []
     for i, l in enumerate(lines):
@@ -185,29 +185,44 @@ def parse_ah_table(raw):
             continue
         names, date_str, tm_raw, slug = m.groups()
         tm = _to_thai_time(date_str, tm_raw)
-        prob, side, line = "", "", ""
+        prob, side, line, pscore = "", "", "", ""
         for j in range(i + 1, min(i + 10, len(lines))):
             pm = prob_re.match(lines[j])
             if pm and not prob:
                 prob = pm.group(1)
             km = pick_re.match(lines[j])
             if km:
-                side, line = km.group(1), km.group(2)
+                side, line, pscore = km.group(1), km.group(2), km.group(3)
                 break
         if not side:      # Forebet ยังไม่ออกเรทคู่นี้ → ข้าม (จะไม่มีเส้นให้มั่ว)
             continue
+        # 🔧 แปลงเป็น "ทีมต่อจริง" จากเครื่องหมายเส้น (Forebet ให้ฝั่งที่มันเชียร์ ไม่ใช่ทีมต่อเสมอ)
+        #   เส้นลบ = ฝั่งนั้นเป็นต่อ (วางแต้ม)  → ต่อ = ฝั่งนั้น เส้นเดิม
+        #   เส้นบวก = ฝั่งนั้นเป็นรอง (รับแต้ม) → ต่อ = ฝั่งตรงข้าม เส้น = ลบของบวกนั้น
+        #   เส้น 0 / Draw = เสมอราคา ไม่มีต่อ
+        try:
+            lv = float(line)
+        except Exception:
+            lv = 0.0
+        if side == "Draw" or lv == 0:
+            fav, fline = "เสมอ", "0"
+        elif lv > 0:
+            fav = "Away" if side == "Home" else "Home"
+            fline = f"-{line.lstrip('+')}"
+        else:
+            fav, fline = side, line
         # วันบอลนับ 10:00 → 09:59 เช้าวันถัดไป = วันเดียว → คู่ดึกข้ามเที่ยงคืน (ตี1-9) อยู่ท้ายลิสต์
         try:
             h, mm = map(int, tm.split(":"))
             order = (h * 60 + mm - 600) % 1440   # 10:00=0 ... 09:59=1439
         except Exception:
             order = 9999
-        rows.append((order, f"{tm} | {names} | ฝั่งต่อ={side} เส้น={line} | เชื่อมั่น {prob}%"))
+        rows.append((order, f"{tm} | {names} | ฝั่งต่อ={fav} เส้น={fline} | สกอร์คาด {pscore} | เชื่อมั่น {prob}%"))
     if not rows:
         return ""
     rows.sort(key=lambda r: r[0])
-    return ("===ตารางราคาแฮนดิแคปจริงจาก Forebet (แหล่งเดียวของเส้น HDP+เวลา · ใช้ตรงนี้เท่านั้น)===\n"
-            "(เวลาไทยแล้ว · วันบอลนับ 10:00 ถึง 09:59 เช้าวันถัดไป = วันเดียวกัน · เรียงตามเวลาเตะจริง)\n"
+    return ("===ตารางราคาแฮนดิแคปจริงจาก Forebet (แหล่งเดียวของเส้น HDP+เวลา+สกอร์คาด · ใช้ตรงนี้เท่านั้น)===\n"
+            "(เวลาไทยแล้ว · วันบอล 10:00→09:59 · ฝั่งต่อ=ทีมต่อจริงแล้ว เส้นเป็นลบเสมอ · ฝั่งต่อ=เสมอ เส้น=0 คือยังไม่เปิดต่อรอง · สกอร์คาด=เจ้าบ้าน-เยือน)\n"
             + "\n".join(r[1] for r in rows))
 
 # ==========================================
@@ -294,7 +309,7 @@ N. HH:MM ทีมเหย้า พบ ทีมเยือน
 🎯 <คำแนะนำ: เยือนไม่แพ้ / บ้านไม่แพ้ / เสมอ / หาผู้ชนะ / สูงแรก / สูงเต็ม / ต่ำแรก / ต่ำเต็ม> + เส้นตัวเลขเท่านั้น (เช่น 'เยือนไม่แพ้ +0.25' · 'สูงเต็ม 2.5')
    🚫 บรรทัด 🎯 นี้ห้ามมีคำว่า Home/Away/HDP/ราคา/ปิดเสมอ ปนเด็ดขาด (ทำให้มั่ว) — เอาแค่คำแนะนำไทย + เลขเส้น
 ⚖️ ต่อ: <ชื่อทีมที่เป็นต่อ> <เส้น>  (แปลง Home=ชื่อเจ้าบ้าน · Away=ชื่อเยือน · เช่น 'ต่อ: FC Anyang -0.5') · ถ้าตารางเป็น Draw หรือเส้น 0 หรือคู่นี้ไม่มีในตาราง = เขียน "เสมอราคา (ยังไม่เปิดต่อรอง)" ห้ามแปะ Home/Away ลอยๆ
-🔮 Forebet คาด H-A  (สกอร์คาดของคู่นี้จากข้อมูล Forebet · ใส่ทุกคู่ให้ผู้ใช้ดูเทียบเอง · หาไม่เจอจริงๆ ค่อยเว้น)
+🔮 Forebet คาด H-A  (ใช้ค่า "สกอร์คาด" จากตารางราคา AH ของคู่นั้นก่อน · ถ้าคู่นั้นไม่มีในตาราง ค่อยดูจากข้อมูลดิบ · ใส่ทุกคู่ให้ผู้ใช้ดูเทียบเอง · หาไม่เจอจริงๆ ค่อยเว้น)
 ⭐ X ดาว (YY%)
 📌 เหตุผลสั้น 1-2 บรรทัด
 
