@@ -1,9 +1,7 @@
 name: Run Football Scraper
 
-# รันอัตโนมัติทุก 2 ชม. = 12 ครั้ง/วัน (Gemini ฟรีจำกัด 20 ครั้ง/วัน — เดิม 24/วันเกินโควตา)
+# เรียกมือล้วน — สั่งผ่าน /บอลสด ใน Telegram (PIKTAX ยิง workflow_dispatch) · ปิด auto cron แล้ว (กันเผาโควตา Gemini ฟรี 20/วัน)
 on:
-  schedule:
-    - cron: '5 */2 * * *'
   workflow_dispatch:
 
 jobs:
