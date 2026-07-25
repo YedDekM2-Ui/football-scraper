@@ -364,6 +364,45 @@ def collect_flags(raw, fmap):
         if cc:
             fmap.setdefault(m.group("mid"), cc)
 
+# ==========================================
+# 4.75 เก็บ "เรทน้ำ" (คอลัมน์ Coef. ของ Forebet) → id → เรทแบบทศนิยม (1.65, 2.68)
+#      วัดจากหน้า asian-handicap จริง (scratchpad/p_ah.txt) แถวหนึ่งเรียงแบบนี้ นับจากบรรทัดลิงก์:
+#        +0 ลิงก์ · +2 '66%' · +4 'Away +0.25 1-1' · +6 สกอร์คาด '1 - 1'
+#        +8 'Avg. goals' (2.40) ← ❌ ไม่ใช่ราคา! เคยเข้าใจผิด · ยืนยัน: สกอร์คาด 1-1→~2.0, 5-0→5.76
+#        +10 อากาศ · +12 Coef. '+168'/'-154'/' - ' ← ✅ ราคาจริง · +14 สถานะ '90'/'HT' · +16 สกอร์จริง
+#      Forebet เสิร์ฟราคาเป็น "American odds" (มีตัวติดหัวเสมอ) → แปลงเป็นทศนิยมเอง
+#        +A → 1+A/100  ·  -A → 1+100/A     (ตั้งค่า COEF บนเว็บเปลี่ยนรูปแบบได้ → รับทศนิยมตรงๆ ด้วย)
+#      ยืนยันว่าเป็นราคาของ pick AH จริง: แปลงทั้งหน้าแล้วความน่าจะเป็นแฝงเฉลี่ย 60.0%
+#        เทียบ % ของ Forebet เฉลี่ย 57.7% → ต่างกัน ~2% = ค่าน้ำเจ้ามือของตลาด AH เป๊ะ
+#      ⚠️ มีราคาแค่ ~23/44 คู่ (ที่เหลือ Forebet ขึ้น ' - ') → คู่ไม่มีราคาจะเว้นว่าง ไม่นับตอนคิดกำไร
+#      ⚠️ ยังไม่ให้ Gemini เห็นราคา — เก็บไว้วัด "กำไรจริง" ของวิธีคัดแบบเดิมก่อน
+#         (ถ้าใส่ให้ AI เห็นวันนี้ = พฤติกรรมเปลี่ยนทันที แล้วเทียบก่อน/หลังไม่ได้)
+_AM_ODDS_RE = re.compile(r'^([+-])(\d{2,4})$')
+_DEC_ODDS_RE = re.compile(r'^(\d{1,2}\.\d{1,2})$')
+
+def collect_odds(raw, omap):
+    if not raw:
+        return
+    lines = [l.strip() for l in raw.splitlines()]
+    link_re = re.compile('^' + _LINK_PAT + '$')
+    for i, l in enumerate(lines):
+        m = link_re.match(l)
+        if not m:
+            continue
+        mid = m.group(6)
+        if mid in omap:
+            continue
+        for j in range(i + 11, min(i + 15, len(lines))):   # ล็อกช่วงแคบรอบคอลัมน์ Coef. (กันไปโดน Avg.goals ที่ +8)
+            am = _AM_ODDS_RE.match(lines[j])
+            if am:
+                a = int(am.group(2))
+                omap[mid] = f"{(1 + a / 100) if am.group(1) == '+' else (1 + 100 / a):.2f}"
+                break
+            de = _DEC_ODDS_RE.match(lines[j])
+            if de and float(de.group(1)) >= 1.01:
+                omap[mid] = de.group(1)
+                break
+
 # ---------- หน้าบอลสด: id → (นาที, สกอร์, สกอร์ครึ่งแรก) ----------
 LIVE_URL = "https://www.forebet.com/en/live-football-tips"
 _LIVE_SCORE = re.compile(r'^\*\*(\d+)\s*[-–]\s*(\d+)\*\*\s*(?:\((\d+)\s*[-–]\s*(\d+)\))?')
@@ -759,6 +798,7 @@ def main():
     ah_raw = ""
     time_map = {}   # slug -> (ชื่อคู่, เวลาไทย) จากทุกลิงก์
     flag_map = {}   # id -> รหัสประเทศ (จากรูปธงของ Forebet)
+    odds_map = {}   # id -> เรทน้ำ (coef.) → ส่งไปเก็บในชีต ใช้คิดกำไรจริง ไม่ใช่แค่ถูก/ผิด
     for index, url in enumerate(urls, 1):
         print(f"{index}/{len(urls)} ดึง: {url}")
         raw = scrape_football_data(url)
@@ -770,6 +810,7 @@ def main():
             collect_flags(raw, flag_map)      # เก็บธงชาติตามลีก
             if "asian-handicap" in url:
                 ah_raw = raw   # เก็บดิบไว้ให้ parser (ก่อน compact)
+                collect_odds(raw, odds_map)   # เรทเอาจากหน้านี้เท่านั้น (วัดตำแหน่งคอลัมน์มาแล้ว หน้าอื่นเลย์เอาต์ต่าง)
         time.sleep(3)  # กันชนลิมิต
 
     # หน้าบอลสด → นาที + สกอร์ ณ ขณะนั้น (เอาไปแปะใต้หัวคู่)
@@ -778,7 +819,7 @@ def main():
     if live_raw:
         collect_flags(live_raw, flag_map)
         live_map = parse_live_table(live_raw)
-    print(f"🔴 บอลสด: {len(live_map)} คู่ · 🏳️ ธง: {len(flag_map)} คู่")
+    print(f"🔴 บอลสด: {len(live_map)} คู่ · 🏳️ ธง: {len(flag_map)} คู่ · 💰 เรท: {len(odds_map)} คู่")
 
     ah_table = parse_ah_table(ah_raw)
     time_table = fmt_time_table(time_map)
@@ -816,10 +857,10 @@ def main():
     print("📲 ส่งเข้า Telegram...")
     send_telegram_message(result)  # Gemini คุมหัวข้อ+รูปแบบทั้งหมดตาม prompt แล้ว
     if tips_raw:
-        log_tips_to_piktax(tips_raw)
+        log_tips_to_piktax(tips_raw, odds_map)
 
 
-def log_tips_to_piktax(raw):
+def log_tips_to_piktax(raw, odds_map=None):
     """ส่ง JSON ทีเด็ดไปบันทึกชีตที่ PIKTAX (doPost -> logFootballTips_)"""
     if not PIKTAX_STATE_URL:
         return
@@ -832,10 +873,18 @@ def log_tips_to_piktax(raw):
     except Exception as e:
         print(f"⚠️ JSON tips ผิดรูปแบบ: {e}")
         return
+    # แปะเรทน้ำเข้าไปเอง (ไม่ให้ AI กรอก — มันจะมั่วเลข) · หาไม่เจอปล่อยว่าง ชีตจะข้ามคู่นั้นตอนคิดกำไร
+    nod = 0
+    if odds_map:
+        for t in tips:
+            o = odds_map.get(str(t.get("id") or "").strip(), "")
+            if o:
+                t["odds"] = o
+                nod += 1
     try:
         base = PIKTAX_STATE_URL.split("?")[0]
         requests.post(base, json={"fbtips": tips}, timeout=60)
-        print(f"📝 ส่งบันทึก {len(tips)} คู่ลงชีตแล้ว")
+        print(f"📝 ส่งบันทึก {len(tips)} คู่ลงชีตแล้ว (มีเรท {nod}/{len(tips)})")
     except Exception as e:
         print(f"⚠️ ส่งบันทึกชีตไม่ได้: {e}")
 
