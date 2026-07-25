@@ -448,6 +448,54 @@ _HEAD_RE = re.compile(r'^(?:🔥\s*)?\d+\.\s*\d{1,2}:\d{2}\s')
 def _nm(s):
     return re.sub(r'[^a-z0-9]', '', (s or "").lower())
 
+# ==========================================
+# 4.78 เติมฟิลด์ "id" ให้ทีเด็ดเอง (ไม่พึ่ง Gemini)
+#      🩸 วัดของจริง 24 ก.ค. 69: ชีต 67/67 แถว id ว่างเปล่า → พังต่อกันเป็นโดมิโน
+#         id ว่าง → คีย์ชีตถอยไปใช้ชื่อทีม (เกรดผลติดแค่ 13/67 · ค้าง 241 คู่)
+#                 → แปะเรทไม่ได้เลย (odds_map คีย์เป็น id) → ROI ไม่มีวันมีข้อมูล
+#                 → ธง/LIVE ก็ fallback (fmap/live_map คีย์เป็น id เหมือนกัน)
+#         prompt สั่งย้ำ 2 บรรทัดว่า "คัดลอก id มาให้ตรง" แล้ว มันก็ยังไม่ทำ
+#      → เลิกขอ: จับ id เองจากตารางเวลา (ชื่อคู่ที่ Gemini อ่านมาก็มาจากลิงก์ชุดเดียวกัน)
+#        หลักเดียวกับเรท/ธง — "ทำเอง ไม่ให้ AI ทำ" เพราะโค้ดไม่ลืมและไม่มั่ว
+#      ⚠️ กำกวม (เข้าหลายคู่) = ปล่อยว่าง ดีกว่าเดาผิดแล้วไปเกรดผลของคู่อื่น
+# ==========================================
+def patch_ids(tips_raw, time_map):
+    """คืน tips_raw ที่เติม id แล้ว (สตริง JSON เดิม ไม่แตะรูปแบบ ให้ฟังก์ชันปลายทางอ่านต่อได้เหมือนเดิม)"""
+    if not tips_raw or not time_map:
+        return tips_raw
+    m = re.search(r"\[.*\]", tips_raw.strip().strip("`"), re.S)
+    if not m:
+        return tips_raw
+    try:
+        tips = json.loads(m.group(0))
+    except Exception:
+        return tips_raw            # JSON เพี้ยน → ปล่อยตามเดิม ให้ปลายทางไปบ่นเอง
+
+    idx = [(_nm(nm), mid) for mid, (nm, _t) in time_map.items()]
+    had = fixed = ambig = miss = 0
+    for t in tips:
+        if str(t.get("id") or "").strip() in time_map:
+            had += 1                       # id ที่ AI ให้มา "มีจริงในตาราง" → เชื่อได้
+            continue
+        h, a = _nm(t.get("home")), _nm(t.get("away"))
+        if len(h) < 3 or len(a) < 3:       # ชื่อไทย/สั้นเกิน → _nm เหลือแทบว่าง เทียบไม่ได้
+            t["id"] = ""
+            miss += 1
+            continue
+        hits = [mid for nn, mid in idx if h in nn and a in nn]
+        if len(hits) > 1:                  # ชื่อซ้ำ (ทีมสำรอง/ลีกเยาวชน) → คัดด้วยลำดับ บ้านต้องมาก่อนเยือน
+            om = {mid: nn for nn, mid in idx}
+            hits = [mid for mid in hits if om[mid].index(h) < om[mid].index(a)]
+        if len(hits) == 1:
+            t["id"] = hits[0]
+            fixed += 1
+        else:
+            t["id"] = ""                   # 0 = จับไม่ได้ · >1 = ยังกำกวม → ล้างของ AI ทิ้ง (มันมั่วเลขมา)
+            ambig += 1 if hits else 0
+            miss += 0 if hits else 1
+    print(f"🆔 id ทีเด็ด: AI ให้มาถูก {had} · จับให้เอง {fixed} · กำกวม {ambig} · ไม่เจอ {miss} (จาก {len(tips)} คู่)")
+    return json.dumps(tips, ensure_ascii=False)
+
 def decorate_tips(text, tips_raw, fmap, live_map):
     """เติม (ก) ธงชาติหลังเวลา (ข) บรรทัด LIVE ใต้หัวคู่ — จับคู่ด้วยชื่อทีมจาก ===DATA==="""
     if not text or not tips_raw:
@@ -852,6 +900,7 @@ def main():
         text_part, _, tips_raw = result.partition("===DATA===")
         result = text_part.strip()
 
+    tips_raw = patch_ids(tips_raw, time_map)   # เติม id ก่อนใครใช้ — ธง/LIVE/เรท/คีย์ชีต คีย์เป็น id ทั้งหมด
     result = decorate_tips(result, tips_raw, flag_map, live_map)  # เติมธง + บรรทัด LIVE (ทำเอง ไม่ให้ AI มั่ว)
 
     print("📲 ส่งเข้า Telegram...")
