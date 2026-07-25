@@ -139,8 +139,17 @@ def scrape_football_data(url):
 #    ใหม่: [ชื่อคู่ MM/DD/YYYY h:mm AM/PM](.../matches/slug-id)  ← เวลา UTC 12 ชม. แบบอเมริกา
 #    ของเดิมจับไม่ได้เลยสักคู่ → ตารางเวลาว่าง → prompt สั่ง "ไม่มีเวลา=ตัดทิ้ง" → บอลหายหมด
 #    ตัวใหม่รับได้ทั้ง 2 แบบ + ดึง "เลข id ท้ายลิงก์" ออกมาด้วย (= MatchID ตัวจริง ใช้เป็นคีย์ถาวร)
+#    ⚠️ กับดักที่ทำบอลหายเป็นลีก (แก้ 25 ก.ค. 2026): slug เดิมรับแค่ [a-z0-9.-]
+#       ชื่อทีมที่มีสระ/อักษรพิเศษ → Jina เขียน URL เป็น %C3%A1 ฯลฯ → ไม่มี % ในคลาส = ไม่ติด
+#       = ลีกที่ชื่อทีมมี accent หายทั้งลีก (เม็กซิโก Atlético/Mazatlán/Querétaro · ชิลี Ñublense/Unión ·
+#         บราซิล Criciúma · เยอรมัน/สวีเดน ä ö ü ß) → ไม่มีเวลา → prompt สั่ง "ไม่มีเวลา=ตัดทิ้ง" → เงียบ
+_SLUG = r'[A-Za-z0-9.%\-]'
 _LINK_PAT = (r'\[(.+?)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})\s*([AP]M)?\]'
-             r'\(https://www\.forebet\.com/en/football/matches/([a-z0-9.\-]+?)-(\d+)\)')
+             r'\(https://www\.forebet\.com/en/football/matches/(' + _SLUG + r'+?)-(\d+)\)')
+#    รูปแบบที่ 2 ที่ Forebet ใช้สลับกันในหน้าเดียวกัน: วันเวลาอยู่ "นอก" วงเล็บ + ชื่อทีมคั่นด้วย " - "
+#       [Home - Away](.../matches/slug-id)21/07/2026 18:00
+_LINK_PAT2 = (r'\[(.+?)\]\(https://www\.forebet\.com/en/football/matches/(' + _SLUG + r'+?)-(\d+)\)'
+              r'\s*(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})\s*([AP]M)?')
 
 def _to_thai_time(date_str, tm_str, ampm=None):
     """แปลงเวลาที่ Forebet แสดง → เวลาไทย · คืน HH:MM ล้วน
@@ -235,6 +244,7 @@ def parse_ah_table(raw):
 #     ไม่ว่า Gemini เลือกคู่จากตลาดไหน (แก้ปัญหาเวลาหายในคู่ที่ไม่อยู่ในตาราง AH)
 # ==========================================
 _LINK_RE = re.compile(_LINK_PAT)
+_LINK_RE2 = re.compile(_LINK_PAT2)
 
 def collect_times(raw, tmap):
     """เก็บ MatchID (เลขท้ายลิงก์) → (ชื่อคู่, เวลาไทย)
@@ -246,6 +256,10 @@ def collect_times(raw, tmap):
         names, d, t, ampm, slug, mid = m.groups()
         if mid not in tmap:
             tmap[mid] = (names.strip(), _to_thai_time(d, t, ampm))
+    for m in _LINK_RE2.finditer(raw):      # แบบวันเวลาอยู่นอกวงเล็บ
+        names, slug, mid, d, t, ampm = m.groups()
+        if mid not in tmap:
+            tmap[mid] = (names.replace(" - ", " ").strip(), _to_thai_time(d, t, ampm))
 
 def fmt_time_table(tmap):
     if not tmap:
@@ -262,6 +276,117 @@ def fmt_time_table(tmap):
     return ("===ตารางเวลาแข่งทุกคู่ (เวลาไทยแล้ว · วันบอล 10:00→09:59 · ทุกทีเด็ดต้องมีเวลาจากตารางนี้)===\n"
             "(id = รหัสคู่ถาวรของ Forebet · ต้องคัดลอกใส่ช่อง \"id\" ใน ===DATA=== ให้ตรงเป๊ะ ห้ามแต่งเลขเอง)\n"
             + "\n".join(r[1] for r in rows))
+
+# ==========================================
+# 4.75 ธงชาติตามลีก + สกอร์สด/นาที  → เติมเข้าข้อความ "ด้วย Python หลัง Gemini ตอบ"
+#      ทำเอง ไม่ให้ AI ทำ เพราะ (ก) ไม่ต้องเปลืองโทเคนสอน (ข) AI มั่ว/ลืมได้ แต่โค้ดไม่ลืม
+#      ธงเอาจากรูปธงของ Forebet เอง (images/fc/mx.png → mx → 🇲🇽) แม่นกว่าเดาจากชื่อลีก
+# ==========================================
+_FLAG_OR_LINK = re.compile(
+    r'images/fc/(?P<cc>[a-z0-9_\-]+)\.png'
+    r'|football/matches/' + _SLUG + r'+?-(?P<mid>\d+)\)')
+# ธงย่อยของอังกฤษ (ไม่มีใน regional-indicator ปกติ) + ธงรวมทวีป/ฟุตบอลโลก (Forebet ใช้เลข)
+_FLAG_SPECIAL = {
+    "gb-en": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "gb-eng": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "gb-sct": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "gb-wls": "🏴󠁧󠁢󠁷󠁬󠁳󠁿", "gb-nir": "🇬🇧", "eu": "🇪🇺", "world": "🌍",
+}
+
+def cc_to_flag(cc):
+    """รหัสประเทศ 2 ตัว → อิโมจิธง · เลข/ไม่รู้จัก = ถ้วยรวมทวีป"""
+    if not cc:
+        return ""
+    cc = cc.lower()
+    if cc in _FLAG_SPECIAL:
+        return _FLAG_SPECIAL[cc]
+    if len(cc) == 2 and cc.isalpha():
+        return chr(0x1F1E6 + ord(cc[0]) - 97) + chr(0x1F1E6 + ord(cc[1]) - 97)
+    return "🏆"      # เลข (13.png) = รายการรวมหลายชาติ เช่น UEFA/CONMEBOL
+
+def collect_flags(raw, fmap):
+    """เก็บ id คู่ → ธง โดยยึด 'รูปธงที่โผล่ก่อนลิงก์คู่นั้น' (Forebet วางธงหัวลีกไว้เหนือคู่)"""
+    if not raw:
+        return
+    cc = None
+    for m in _FLAG_OR_LINK.finditer(raw):
+        if m.group("cc"):
+            cc = m.group("cc")
+        elif cc:
+            fmap.setdefault(m.group("mid"), cc)
+
+# ---------- หน้าบอลสด: id → (นาที, สกอร์, สกอร์ครึ่งแรก) ----------
+LIVE_URL = "https://www.forebet.com/en/live-football-tips"
+_LIVE_SCORE = re.compile(r'^\*\*(\d+)\s*[-–]\s*(\d+)\*\*\s*(?:\((\d+)\s*[-–]\s*(\d+)\))?')
+_LIVE_MIN = re.compile(r'^(\d{1,3})$|^(HT|FT|AET|Pen\.?)$', re.I)
+
+def parse_live_table(raw):
+    """คืน {id: 'LIVE:<นาที>"  h - a (hth - hta)'} จากหน้า live ของ Forebet
+       รูปแบบจริง: [ชื่อคู่ วันเวลา](.../matches/slug-id) ... <นาที> ... **h - a**(hth - hta)"""
+    out = {}
+    if not raw:
+        return out
+    lines = [l.strip() for l in raw.splitlines()]
+    mid_re = re.compile(r'football/matches/' + _SLUG + r'+?-(\d+)\)')
+    for i, l in enumerate(lines):
+        mm = mid_re.search(l)
+        if not mm:
+            continue
+        mid = mm.group(1)
+        for j in range(i + 1, min(i + 28, len(lines))):
+            sm = _LIVE_SCORE.match(lines[j])
+            if not sm:
+                continue
+            minute = ""
+            for k in range(j - 1, max(i, j - 5), -1):     # นาทีคือบรรทัดมีเนื้อความก่อนสกอร์
+                if not lines[k]:
+                    continue
+                km = _LIVE_MIN.match(lines[k])
+                if km:
+                    minute = (km.group(1) or km.group(2)).upper()
+                break
+            if minute.isdigit() and int(minute) > 90:      # 93 → 90+3 (ตามที่พี่ให้มา)
+                minute = f"90+{int(minute) - 90}"
+            h, a, hh, ha = sm.groups()
+            # ครึ่งแรกยังไม่จบ = ไม่มีวงเล็บ · พักครึ่ง = สกอร์เท่ากับครึ่งแรก ไม่ต้องซ้ำ
+            ht = f" ({hh} - {ha})" if hh is not None and (hh, ha) != (h, a) else ""
+            tag = f'{minute}"' if minute.isdigit() or "+" in minute else minute   # HT/FT ไม่ต้องมี "
+            out[mid] = f'LIVE:{tag}  {h} - {a}{ht}' if minute else f'LIVE:  {h} - {a}{ht}'
+            break
+    return out
+
+_HEAD_RE = re.compile(r'^(?:🔥\s*)?\d+\.\s*\d{1,2}:\d{2}\s')
+
+def _nm(s):
+    return re.sub(r'[^a-z0-9]', '', (s or "").lower())
+
+def decorate_tips(text, tips_raw, fmap, live_map):
+    """เติม (ก) ธงชาติหลังเวลา (ข) บรรทัด LIVE ใต้หัวคู่ — จับคู่ด้วยชื่อทีมจาก ===DATA==="""
+    if not text or not tips_raw:
+        return text
+    try:
+        m = re.search(r'\[.*\]', tips_raw, re.S)
+        tips = json.loads(m.group(0)) if m else []
+    except Exception:
+        return text
+    meta = []
+    for t in tips:
+        mid = str(t.get("id") or "")
+        meta.append((_nm(t.get("home")), _nm(t.get("away")),
+                     cc_to_flag(fmap.get(mid)), live_map.get(mid, "")))
+    out = []
+    for line in text.splitlines():
+        out.append(line)
+        if not _HEAD_RE.match(line):
+            continue
+        key = _nm(line)
+        for home, away, flag, live in meta:
+            if not home or home not in key or (away and away not in key):
+                continue
+            if flag and flag not in line:      # ธง: แทรกหลัง HH:MM
+                out[-1] = re.sub(r'^((?:🔥\s*)?\d+\.\s*\d{1,2}:\d{2})\s+', r'\1 ' + flag + ' ', out[-1])
+            if live:
+                out.append(live)
+            break
+    return "\n".join(out)
 
 # ==========================================
 # 4.9 รวบรวม Gemini keys หลายตัว (สลับเมื่อ key เต็มโควตา 20/วัน → คูณโควตา)
@@ -581,6 +706,7 @@ def main():
     ok = 0
     ah_raw = ""
     time_map = {}   # slug -> (ชื่อคู่, เวลาไทย) จากทุกลิงก์
+    flag_map = {}   # id -> รหัสประเทศ (จากรูปธงของ Forebet)
     for index, url in enumerate(urls, 1):
         print(f"{index}/{len(urls)} ดึง: {url}")
         raw = scrape_football_data(url)
@@ -589,9 +715,18 @@ def main():
             label = url.rstrip("/").split("/")[-1]
             combined += f"\n\n===== ตลาด: {label} =====\n{_compact(raw)}"
             collect_times(raw, time_map)      # เก็บเวลาแข่งจากทุกหน้า
+            collect_flags(raw, flag_map)      # เก็บธงชาติตามลีก
             if "asian-handicap" in url:
                 ah_raw = raw   # เก็บดิบไว้ให้ parser (ก่อน compact)
         time.sleep(3)  # กันชนลิมิต
+
+    # หน้าบอลสด → นาที + สกอร์ ณ ขณะนั้น (เอาไปแปะใต้หัวคู่)
+    live_map = {}
+    live_raw = scrape_football_data(LIVE_URL)
+    if live_raw:
+        collect_flags(live_raw, flag_map)
+        live_map = parse_live_table(live_raw)
+    print(f"🔴 บอลสด: {len(live_map)} คู่ · 🏳️ ธง: {len(flag_map)} คู่")
 
     ah_table = parse_ah_table(ah_raw)
     time_table = fmt_time_table(time_map)
@@ -623,6 +758,8 @@ def main():
     if "===DATA===" in result:
         text_part, _, tips_raw = result.partition("===DATA===")
         result = text_part.strip()
+
+    result = decorate_tips(result, tips_raw, flag_map, live_map)  # เติมธง + บรรทัด LIVE (ทำเอง ไม่ให้ AI มั่ว)
 
     print("📲 ส่งเข้า Telegram...")
     send_telegram_message(result)  # Gemini คุมหัวข้อ+รูปแบบทั้งหมดตาม prompt แล้ว
