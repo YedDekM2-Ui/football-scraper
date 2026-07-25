@@ -31,6 +31,9 @@ jobs:
           GEMINI_API_KEY2: ${{ secrets.GEMINI_API_KEY2 }}
           GEMINI_API_KEY3: ${{ secrets.GEMINI_API_KEY3 }}
           GEMINI_API_KEY4: ${{ secrets.GEMINI_API_KEY4 }}
+          GEMINI_API_KEY5: ${{ secrets.GEMINI_API_KEY5 }}
+          GEMINI_API_KEY6: ${{ secrets.GEMINI_API_KEY6 }}
+          GEMINI_API_KEY7: ${{ secrets.GEMINI_API_KEY7 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
