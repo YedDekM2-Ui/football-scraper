@@ -4,7 +4,12 @@ import json
 import time
 import urllib.parse
 import requests
-from google import genai
+
+# SDK ใหม่ (google-genai) — ถ้าไม่มี/ลงไม่สำเร็จ ยังวิ่งต่อได้ด้วยเส้นทาง REST (ดูหัวข้อ 4.95)
+try:
+    from google import genai
+except Exception:
+    genai = None
 
 # ==========================================
 # 1. ค่าความลับจาก Environment Variables (GitHub Secrets)
@@ -129,19 +134,42 @@ def scrape_football_data(url):
 # 4.5 แกะหน้า Asian Handicap → ตารางเส้นจริง (กัน Gemini มั่วราคา)
 #     block: [ชื่อคู่ DD/MM/YYYY HH:MM](.../matches/slug-id) \n NN% \n Side line score
 # ==========================================
-def _to_thai_time(date_str, tm_str):
-    """Forebet ผ่าน Jina = เวลายุโรป (CET/CEST) → แปลงเป็นเวลาไทย · คืน HH:MM ล้วน"""
+# 🔗 ลิงก์คู่บอลของ Forebet — รูปแบบเปลี่ยนแล้ว (ก.ค. 2026)
+#    เดิม: [ชื่อคู่ DD/MM/YYYY HH:MM](.../matches/slug-id)      ← เวลายุโรป 24 ชม.
+#    ใหม่: [ชื่อคู่ MM/DD/YYYY h:mm AM/PM](.../matches/slug-id)  ← เวลา UTC 12 ชม. แบบอเมริกา
+#    ของเดิมจับไม่ได้เลยสักคู่ → ตารางเวลาว่าง → prompt สั่ง "ไม่มีเวลา=ตัดทิ้ง" → บอลหายหมด
+#    ตัวใหม่รับได้ทั้ง 2 แบบ + ดึง "เลข id ท้ายลิงก์" ออกมาด้วย (= MatchID ตัวจริง ใช้เป็นคีย์ถาวร)
+_LINK_PAT = (r'\[(.+?)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})\s*([AP]M)?\]'
+             r'\(https://www\.forebet\.com/en/football/matches/([a-z0-9.\-]+?)-(\d+)\)')
+
+def _to_thai_time(date_str, tm_str, ampm=None):
+    """แปลงเวลาที่ Forebet แสดง → เวลาไทย · คืน HH:MM ล้วน
+    มี AM/PM = รูปแบบใหม่ MM/DD/YYYY แบบ UTC   (ยืนยันแล้ว: อาร์เจนตินาเตะ 20:35 ท้องถิ่น = 23:35 UTC, ชิลี 20:30 = 00:30 UTC)
+    ไม่มี AM/PM = รูปแบบเดิม DD/MM/YYYY เวลายุโรป
+    """
     try:
-        from datetime import datetime
+        from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
-        dt = datetime.strptime(f"{date_str} {tm_str}", "%d/%m/%Y %H:%M")
-        dt = dt.replace(tzinfo=ZoneInfo("Europe/Paris")).astimezone(ZoneInfo("Asia/Bangkok"))
-        return dt.strftime("%H:%M")
+        if ampm:
+            dt = datetime.strptime(f"{date_str} {tm_str} {ampm.upper()}", "%m/%d/%Y %I:%M %p")
+            src = "UTC"
+        else:
+            dt = datetime.strptime(f"{date_str} {tm_str}", "%d/%m/%Y %H:%M")
+            src = "Europe/Paris"
+        return dt.replace(tzinfo=ZoneInfo(src)).astimezone(ZoneInfo("Asia/Bangkok")).strftime("%H:%M")
     except Exception:
-        # สำรอง: บวก 5 ชม. ตรงๆ (CEST+2 → ไทย+7) เผื่อ zoneinfo ไม่มี
+        # สำรอง เผื่อ zoneinfo ไม่มี: UTC→ไทย +7 · ยุโรป→ไทย +5
         try:
             h, m = tm_str.split(":")
-            return f"{(int(h) + 5) % 24:02d}:{m}"
+            h = int(h)
+            if ampm:
+                p = ampm.upper()
+                if p == "PM" and h != 12:
+                    h += 12
+                elif p == "AM" and h == 12:
+                    h = 0
+                return f"{(h + 7) % 24:02d}:{m}"
+            return f"{(h + 5) % 24:02d}:{m}"
         except Exception:
             return tm_str
 
@@ -149,7 +177,7 @@ def parse_ah_table(raw):
     if not raw:
         return ""
     lines = [l.strip() for l in raw.splitlines()]
-    link_re = re.compile(r'^\[(.+?)\s+(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\]\(https://www\.forebet\.com/en/football/matches/([a-z0-9-]+?)-\d+\)$')
+    link_re = re.compile('^' + _LINK_PAT + '$')
     pick_re = re.compile(r'^(Home|Away|Draw)\s+([+-]?\d+(?:\.\d+)?)\s+(\d+-\d+)$')
     prob_re = re.compile(r'^(\d{1,3})%$')
     rows = []
@@ -157,8 +185,8 @@ def parse_ah_table(raw):
         m = link_re.match(l)
         if not m:
             continue
-        names, date_str, tm_raw, slug = m.groups()
-        tm = _to_thai_time(date_str, tm_raw)
+        names, date_str, tm_raw, ampm, slug, mid = m.groups()
+        tm = _to_thai_time(date_str, tm_raw, ampm)
         prob, side, line, pscore = "", "", "", ""
         for j in range(i + 1, min(i + 10, len(lines))):
             pm = prob_re.match(lines[j])
@@ -194,7 +222,7 @@ def parse_ah_table(raw):
             order = (h * 60 + mm - 600) % 1440   # 10:00=0 ... 09:59=1439
         except Exception:
             order = 9999
-        rows.append((order, f"{tm} | {names} | ฝั่งต่อ={fav} เส้น={fline} | สกอร์คาด {pscore} | เชื่อมั่น {prob}%"))
+        rows.append((order, f"{tm} | {names} | ฝั่งต่อ={fav} เส้น={fline} | สกอร์คาด {pscore} | เชื่อมั่น {prob}% | id={mid}"))
     if not rows:
         return ""
     rows.sort(key=lambda r: r[0])
@@ -206,29 +234,33 @@ def parse_ah_table(raw):
 # 4.7 ตารางเวลาแข่งกลาง — ดึงจาก "ทุกลิงก์" (เวลาไทย) ทุกทีเด็ดจะมีเวลาเสมอ
 #     ไม่ว่า Gemini เลือกคู่จากตลาดไหน (แก้ปัญหาเวลาหายในคู่ที่ไม่อยู่ในตาราง AH)
 # ==========================================
-_LINK_RE = re.compile(r'\[(.+?)\s+(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\]\(https://www\.forebet\.com/en/football/matches/([a-z0-9-]+?)-\d+\)')
+_LINK_RE = re.compile(_LINK_PAT)
 
 def collect_times(raw, tmap):
+    """เก็บ MatchID (เลขท้ายลิงก์) → (ชื่อคู่, เวลาไทย)
+    ⭐ คีย์เป็น 'เลข id' ไม่ใช่ slug — slug เป็นแค่ของประดับ (ลองยิง slug ผิดกับ id ถูก เว็บก็คืนคู่ตาม id)
+       id เดียวกันทุกวัน ทุกภาษา → ใช้เป็นคีย์ถาวรของชีตได้ ไม่หลุดเวลาชื่อทีมสะกดต่าง (อังกฤษ/ไทย)"""
     if not raw:
         return
     for m in _LINK_RE.finditer(raw):
-        names, d, t, slug = m.groups()
-        if slug not in tmap:
-            tmap[slug] = (names.strip(), _to_thai_time(d, t))
+        names, d, t, ampm, slug, mid = m.groups()
+        if mid not in tmap:
+            tmap[mid] = (names.strip(), _to_thai_time(d, t, ampm))
 
 def fmt_time_table(tmap):
     if not tmap:
         return ""
     rows = []
-    for names, t in tmap.values():
+    for mid, (names, t) in tmap.items():
         try:
             h, mm = map(int, t.split(":"))
             order = (h * 60 + mm - 600) % 1440
         except Exception:
             order = 9999
-        rows.append((order, f"{t} | {names}"))
+        rows.append((order, f"{t} | {names} | id={mid}"))
     rows.sort(key=lambda r: r[0])
     return ("===ตารางเวลาแข่งทุกคู่ (เวลาไทยแล้ว · วันบอล 10:00→09:59 · ทุกทีเด็ดต้องมีเวลาจากตารางนี้)===\n"
+            "(id = รหัสคู่ถาวรของ Forebet · ต้องคัดลอกใส่ช่อง \"id\" ใน ===DATA=== ให้ตรงเป๊ะ ห้ามแต่งเลขเอง)\n"
             + "\n".join(r[1] for r in rows))
 
 # ==========================================
@@ -246,6 +278,98 @@ def gemini_keys():
         if k and k not in seen:
             keys.append(k); seen.add(k)
     return keys
+
+# ==========================================
+# 4.92 ยิง Gemini แบบ "หลายเส้นทาง" — รองรับคีย์ยุคใหม่ AQ.* ของ Google
+#      Google ย้ายจาก Standard key (AIza...) → Auth key (AQ....) และ AI Studio ออกคีย์ AQ ให้อัตโนมัติแล้ว
+#      ปัญหาคือ SDK/ไลบรารีรุ่นเก่าบางตัว "ตรวจว่าต้องขึ้นต้น AIza" → เด้งทั้งที่คีย์ถูก
+#      แก้: ลอง 3 เส้นทางไล่ลงมา ถ้าเส้นทางแรกไม่ผ่านเพราะ 'ปัญหาการยืนยันตัวตน' ค่อยลองเส้นถัดไป
+#        1) SDK google-genai (เร็วสุด · ใช้ได้ทั้ง AIza และ AQ ถ้า SDK ใหม่พอ)
+#        2) REST + header x-goog-api-key   ← เส้นทางที่ทางการแนะนำสำหรับคีย์ AQ
+#        3) REST + ?key=... ท้าย URL       ← เส้นทางเก่า เผื่อบัญชียังใช้แบบเดิม
+#      429/โควตาเต็ม = ไม่ใช่ปัญหาคีย์ → โยน QuotaFull ออกไปให้ตัวสลับคีย์จัดการเหมือนเดิม
+# ==========================================
+GEMINI_REST = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+class QuotaFull(Exception):
+    """โควตาวันนี้ของคีย์นี้เต็ม (429) — ให้สลับคีย์ ไม่ใช่สลับเส้นทาง"""
+    pass
+
+def _is_quota_err(msg):
+    m = (msg or "").upper()
+    return "429" in m or "RESOURCE_EXHAUSTED" in m or "QUOTA" in m
+
+def _is_auth_err(msg):
+    m = (msg or "").upper()
+    return any(s in m for s in (
+        "ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_INVALID", "INVALID_API_KEY",
+        "UNAUTHENTICATED", "PERMISSION_DENIED", "EXPECTED OAUTH",
+        "401", "403", "MUST START WITH", "AIZA",
+    ))
+
+def _rest_generate(key, model, prompt, temperature, use_header):
+    """ยิงตรงผ่าน REST · use_header=True → x-goog-api-key (แนะนำสำหรับ AQ) · False → ?key="""
+    url = GEMINI_REST.format(model=model)
+    headers = {"Content-Type": "application/json"}
+    params = {}
+    if use_header:
+        headers["x-goog-api-key"] = key
+    else:
+        params["key"] = key
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": temperature},
+    }
+    r = requests.post(url, headers=headers, params=params, json=body, timeout=180)
+    if r.status_code == 429:
+        raise QuotaFull(r.text[:300])
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts).strip()
+    if not text:
+        raise RuntimeError(f"ตอบกลับว่างเปล่า: {json.dumps(data)[:300]}")
+    return text
+
+def gemini_generate(key, model, prompt, temperature=0.15):
+    """คืน (ข้อความ, ชื่อเส้นทางที่ใช้ได้) · โยน QuotaFull ถ้าโควตาเต็ม"""
+    errors = []
+    routes = []
+    if genai is not None:
+        routes.append("sdk")
+    routes += ["rest-header", "rest-query"]
+    for route in routes:
+        try:
+            if route == "sdk":
+                client = genai.Client(api_key=key)
+                kwargs = {}
+                try:
+                    from google.genai import types as _gt
+                    kwargs["config"] = _gt.GenerateContentConfig(temperature=temperature)
+                except Exception:
+                    pass
+                resp = client.models.generate_content(model=model, contents=prompt, **kwargs)
+                text = (getattr(resp, "text", "") or "").strip()
+                if not text:
+                    raise RuntimeError("SDK ตอบกลับว่างเปล่า")
+                return text, route
+            return _rest_generate(key, model, prompt, temperature, route == "rest-header"), route
+        except QuotaFull:
+            raise
+        except Exception as e:
+            msg = str(e)
+            if _is_quota_err(msg):
+                raise QuotaFull(msg)
+            errors.append(f"{route}: {msg[:160]}")
+            # ไม่ใช่ปัญหายืนยันตัวตน (เช่นเน็ตหลุด/โมเดลไม่มี) → ลองเส้นอื่นก็ไม่ช่วย
+            if not _is_auth_err(msg):
+                break
+    hint = ""
+    if str(key).startswith("AQ."):
+        hint = ("\n   💡 คีย์นี้เป็นแบบใหม่ (AQ.) — ถ้าเด้งทุกเส้นทางแปลว่าตัวคีย์เองยังไม่เปิดสิทธิ์ "
+                "ให้ไปเปิด Generative Language API ในโปรเจกต์ Google Cloud ของคีย์นั้น หรือออกคีย์ใหม่จาก AI Studio")
+    raise RuntimeError("ยิง Gemini ไม่ผ่านสักเส้นทาง →\n   " + "\n   ".join(errors) + hint)
 
 # ==========================================
 # 4.95 ดึงประวัติทีเด็ด "รอบก่อนๆ วันนี้" จากชีต PIKTAX เพื่อวัด "ความนิ่ง"
@@ -270,12 +394,25 @@ def fetch_history_block():
         st = int(it.get("streak", 1) or 1)
         res = str(it.get("result", "")).strip()
         tag = f" [ผลจริงรอบก่อน: {res}]" if res in ("ถูก", "ผิด") else ""
-        rows.append(f"{h} vs {a} | pick เดิม='{pk}' | นิ่งมาแล้ว {st} รอบ{tag}")
+        try:
+            pct_old = int(float(it.get("pct", 0) or 0))
+        except Exception:
+            pct_old = 0
+        ptxt = f" | %เดิม={pct_old}" if pct_old else ""
+        mid = str(it.get("mid", "") or "").strip()
+        mtxt = f" | id={mid}" if mid else ""
+        rows.append(f"{h} vs {a}{mtxt} | pick เดิม='{pk}'{ptxt} | นิ่งมาแล้ว {st} รอบ{tag}")
     if not rows:
         return ""
     print(f"🔁 โหลดประวัตินิ่ง {len(rows)} คู่")
-    return ("===ประวัติทีเด็ดรอบก่อนๆ ของวันนี้ (ใช้วัด 'ความนิ่ง' เท่านั้น · จับคู่ด้วยชื่อทีม)===\n"
+    return ("===ประวัติทีเด็ดรอบก่อนๆ ของวันนี้ (ใช้วัด 'ความนิ่ง' + 'ทิศทางความมั่นใจ' · จับคู่ด้วย id ก่อน ถ้าไม่มีค่อยใช้ชื่อทีม)===\n"
             "(ถ้า pick รอบนี้ของคู่นั้น = 'pick เดิม' → นิ่งเพิ่มเป็น เดิม+1 รอบ · ถ้าต่างจากเดิม = เพิ่งเปลี่ยน รีเซ็ตเป็น 1 · ไม่มีในนี้ = รอบแรกของวัน)\n"
+            "(🔺เดลต้า = %รอบนี้ − %เดิม ของคู่เดียวกันที่ pick ไม่เปลี่ยน · ให้คิดเป็นตัวเลขจริง แล้วปรับดาวตามนี้:\n"
+            "   เดลต้า ≥ +10 = ยิ่งมั่นใจขึ้นชัด → +0.5 ดาว\n"
+            "   +5 ถึง +9    = ขยับขึ้นเล็กน้อย → คงดาว\n"
+            "   −4 ถึง +4    = นิ่ง → คงดาว\n"
+            "   −5 ถึง −9    = เริ่มแกว่ง → −0.5 ดาว\n"
+            "   ≤ −10        = ความมั่นใจร่วงแรง → −1 ดาว และห้ามติด 🔥 ตัวล็อก)\n"
             + "\n".join(rows))
 
 # ==========================================
@@ -317,11 +454,29 @@ def analyze_with_gemini(raw_text, ah_table="", time_table="", history=""):
    • สกอร์คาดโน้มต่ำ (รวม ≤1) แต่ Over% สูง/avg goals >2.7 (หรือกลับกัน สกอร์คาดยิงเยอะแต่เชียร์ Under) → ⚠️ สูงต่ำขัดสกอร์คาด
    • BTTS ว่าทั้งคู่ยิง แต่สกอร์คาดมีฝั่งยิง 0 → ⚠️ BTTS ขัดสกอร์คาด
    • ราคา AH สวน %: %ชนะสูงมาก (≥65) แต่เปิดต่อเส้นบาง/ราคาพอกัน (หรือ %สูสีแต่เปิดต่อครึ่งควบลูก) → ⚠️ ราคาไม่ล้อ%
-   สรุป: คู่ที่ทุกตลาดไปทางเดียว = ดาวเต็ม เชียร์ได้ · คู่ที่ติด ⚠️ = โชว์ให้ผู้ใช้เห็นว่าผิดปกติตรงไหน ไม่ใช่เงียบ
+   📉 **หักดาวเป็นตัวเลขจริง ห้ามหักลอยๆ** (นับธง ⚠️ ที่คู่นั้นติดก่อน แล้วหักตามนี้เป๊ะ):
+      • ติด ⚠️ 0 อัน  = ไม่หัก (คู่นี้เท่านั้นที่มีสิทธิ์เป็น 🔥 ตัวล็อก)
+      • ติด ⚠️ 1 อัน  = **หัก 0.5 ดาว** และ **ห้ามติด 🔥 ตัวล็อก** (ยังแสดงได้ ถ้าหักแล้วยังถึง 3 ดาว)
+      • ติด ⚠️ ตั้งแต่ 2 อันขึ้นไป = **ตัดคู่นั้นทิ้ง ห้ามแสดง** (พยานขัดกันเองหลายปาก = ไม่ใช่ทีเด็ด)
+      • หักดาวแล้วต่ำกว่า 3 ดาว = ตัดทิ้งเช่นกัน (ดาวขั้นต่ำที่ส่งได้คือ 3)
+      • % ที่แสดง ให้ลดตามดาวที่ถูกหักด้วย (หัก 0.5 ดาว ≈ ลด % ลง 7-8 จุด) — ห้ามหักดาวแต่ปล่อย % ค้างสูงเหมือนเดิม
+   สรุป: คู่ที่ทุกตลาดไปทางเดียว = ดาวเต็ม เชียร์ได้ · คู่ที่ติด ⚠️ 1 อัน = โชว์พร้อมเตือน + หักดาวจริง · ติด ≥2 อัน = ไม่ต้องโชว์
 
 ⚖️ วิธี "หักล้างราคา" (หัวใจ — คิดแบบขี้สงสัย ไม่ใช่ลอกตามตลาดใดตลาดหนึ่ง): มองแต่ละตลาดเป็น "พยาน" คนละปาก แล้วเอามาชนกัน — ตลาดที่หนุนทางเดียวกัน = บวกความมั่นใจ · ตลาดที่สวนกัน = หักออก (ไม่ใช่เมิน) เหลือ "ทางที่พยานส่วนใหญ่ยืนตรงกันหลังหักลบแล้ว" จึงเป็นทีเด็ด · ถ้าหักแล้วก้ำกึ่ง = ดาวต่ำ/ข้าม อย่าฝืนเชียร์
 🕒 ความนิ่งข้ามรอบ (ใช้ "ประวัติทีเด็ดรอบก่อนๆ" ด้านล่าง ถ้ามี): คู่ที่ pick รอบนี้ = pick เดิม = ราคานิ่ง = **บวกความมั่นใจ** · คู่ที่ pick เด้งสวนของเดิม = ราคาแกว่ง = **เตือน/หักความมั่นใจ** (บอลใกล้เตะแต่ราคายังไม่นิ่ง = เสี่ยง)
 🔥 ตัวล็อก (เตือนล่วงหน้าว่า "อันนี้แหละมั่นใจสุด"): คู่ที่เข้าครบ 3 ข้อ — (ก) ดาว ≥3.5 (ข) ไม่มีธง ⚠️ เลย (ค) 🔒 นิ่ง ≥2 รอบ — ให้ใส่ 🔥 นำหน้าเลขลำดับ แล้วดันขึ้น **บนสุดในกลุ่มของมัน (กลุ่มบอลสด หรือกลุ่มยังไม่เตะ)** · ถ้ายังไม่มีคู่ไหนครบ (เช่นรอบแรกของวัน ยังไม่มีความนิ่ง) = ไม่ต้องมี 🔥 ห้ามแปะมั่ว
+
+❌ **วันไหนไม่มีของดี ให้บอกว่าไม่มี — ห้ามเค้นคู่มาส่งให้ครบๆ** (สำคัญมาก · การไม่แทงคือการตัดสินใจอย่างหนึ่ง):
+   หลังหักดาวตามกฎ ⚠️ ข้างบนแล้ว ถ้า **ไม่เหลือคู่ไหนถึง 3 ดาว เลยสักคู่** ให้ตอบสั้นๆ แค่นี้ ห้ามแต่งคู่มาเติม:
+   ⚽ ทีเด็ดบอลวันนี้
+   ---------------------------
+   ❌ ไม่มีคู่น่าเล่นวันนี้ — ข้อมูลยังไม่นิ่ง/ตลาดขัดกันเองเกือบทุกคู่ พักวันนี้ดีกว่า
+   📌 <บอกสั้นๆ 1 บรรทัดว่าทำไม เช่น "คู่ส่วนใหญ่ราคาสวน %" หรือ "ลีกเล็กล้วน ข้อมูลบาง">
+   ---------------------------
+   ⚠️ คำเตือน: เรทพวกนี้ไม่รวมถึงกรณีใบแดง
+   ===DATA===
+   []
+   (ย้ำ: จำนวนคู่ที่ส่งได้ = 0 ถึง {MAX_MATCHES} คู่ · ไม่มีขั้นต่ำ · เหลือคู่เดียวก็ส่งคู่เดียว · ไม่เหลือเลยก็ตอบแบบข้างบน)
 
 🔴 กฎสกอร์สด "ตามได้" (ใช้กับ **คู่บอลสด/เตะไปแล้วเท่านั้น** — หัวใจของการล็อก): อ่าน 3 ค่าพร้อมกัน = (1) เวลาที่เตะไปแล้ว (2) % ของตลาด (3) สกอร์สดตอนนั้น แล้วตัดสินว่า "คำทายกำลังจะเป็นจริงไหม":
    • ✅ สกอร์สด **นำไปทางที่ Forebet ทายแล้ว** (เช่นทายเยือนชนะ→เยือนนำอยู่ · ทายต่ำ→ยังยิงกันน้อย) = "ตามได้" → **ยิ่งเตะไปเยอะ + % ยิ่งสูง = ยิ่งพลิกยาก = ดันเป็นตัวล็อก 🔥 บนสุดของกลุ่มบอลสด**
@@ -358,8 +513,11 @@ N. HH:MM ทีมเหย้า พบ ทีมเยือน   (คู่�
 ⚠️ คำเตือน: เรทพวกนี้ไม่รวมถึงกรณีใบแดง
 
 📦 ท้ายสุด (หลังรายการทั้งหมด) ให้ขึ้นบรรทัด "===DATA===" แล้วตามด้วย JSON array ของคู่ที่แนะนำ (เฉพาะที่แสดง) สำหรับบันทึกลงชีต — 1 object ต่อ 1 คู่ ฟิลด์:
-{{"date":"YYYY-MM-DD","time":"HH:MM","league":"...","home":"เจ้าบ้าน","away":"เยือน","fav":"ทีมที่เป็นต่อ","pick":"คำแนะนำ","stars":"3.5","pct":"69"}}
+{{"date":"YYYY-MM-DD","time":"HH:MM","league":"...","home":"เจ้าบ้าน","away":"เยือน","fav":"ทีมที่เป็นต่อ","pick":"คำแนะนำ","stars":"3.5","pct":"69","id":"2419777"}}
 JSON ต้องถูก syntax (double quote) · ส่วนนี้ผู้ใช้ไม่เห็น ระบบเอาไปบันทึกอย่างเดียว
+🆔 ฟิลด์ "id" = เลข id ของคู่นั้นจาก "ตารางเวลาแข่งทุกคู่" ด้านบน — **คัดลอกมาตรงๆ ห้ามแต่งเลขเอง ห้ามเดา** · หาไม่เจอให้ใส่ "" (สตริงว่าง)
+   (id นี้ระบบใช้เป็นคีย์ถาวรของคู่ ไว้ตามผลจริงมากรอกให้อัตโนมัติ — ใส่ผิด = ตามผลไม่เจอ)
+ไม่มีคู่ไหนผ่านเกณฑ์เลย = ใส่ [] (array ว่าง) ห้ามละบรรทัด ===DATA=== ทิ้ง
 
 {time_table}
 
@@ -375,37 +533,27 @@ JSON ต้องถูก syntax (double quote) · ส่วนนี้ผู�
             print("❌ ไม่มี Gemini key")
             return None
         # ล็อกให้ตอบ "นิ่ง" รอบต่อรอบ (temperature ต่ำ) — ไม่งั้นมันสุ่มเปลี่ยนคำเอง ทั้งที่ราคาเท่าเดิม → วัดความนิ่งไม่ได้
-        gen_cfg = None
-        try:
-            from google.genai import types as _gt
-            gen_cfg = _gt.GenerateContentConfig(temperature=0.15)
-        except Exception:
-            gen_cfg = None
         last_err = None
         # สลับทีละ key: key เต็มโควตา (429) → ข้ามไป key ถัดไป (โควตาใหม่)
         for ki, key in enumerate(keys, 1):
-            client = genai.Client(api_key=key)
             quota_full = False
             for model in GEMINI_MODELS:
                 try:
-                    response = (client.models.generate_content(model=model, contents=prompt, config=gen_cfg)
-                                if gen_cfg else
-                                client.models.generate_content(model=model, contents=prompt))
-                    if response.text:
-                        print(f"🤖 key#{ki}/{len(keys)} · รุ่น {model}")
-                        return response.text
+                    text, route = gemini_generate(key, model, prompt, temperature=0.15)
+                    print(f"🤖 key#{ki}/{len(keys)} · รุ่น {model} · เส้นทาง {route}")
+                    return text
+                except QuotaFull as eq:
+                    last_err = eq
+                    print(f"🛑 key#{ki} โควตาเต็ม (20/วัน) → สลับ key ถัดไป")
+                    quota_full = True
+                    break     # ออกจาก loop รุ่น ไป key ถัดไป
                 except Exception as em:
                     last_err = em
-                    msg = str(em)
-                    print(f"⚠️ key#{ki} รุ่น {model}: {msg[:100]}")
-                    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                        print(f"🛑 key#{ki} โควตาเต็ม (20/วัน) → สลับ key ถัดไป")
-                        quota_full = True
-                        break     # ออกจาก loop รุ่น ไป key ถัดไป
+                    print(f"⚠️ key#{ki} รุ่น {model}: {str(em)[:200]}")
                     continue      # 404/อื่นๆ → ลองรุ่นถัดไปของ key เดิม
             if not quota_full and len(keys) > 1:
                 continue          # key นี้ล้มด้วยเหตุอื่น ลอง key ถัดไปเผื่อได้
-        print(f"❌ Gemini ล้มทุก key/รุ่น (โควตาเต็มหมด/ข้ามรอบนี้เงียบๆ): {str(last_err)[:80]}")
+        print(f"❌ Gemini ล้มทุก key/รุ่น (โควตาเต็มหมด/ข้ามรอบนี้เงียบๆ): {str(last_err)[:200]}")
         return None
     except Exception as e:
         print(f"❌ Error ในการเรียก Gemini AI: {e}")
@@ -447,7 +595,13 @@ def main():
 
     ah_table = parse_ah_table(ah_raw)
     time_table = fmt_time_table(time_map)
-    print(f"🕐 ตารางเวลาแข่ง: {len(time_map)} คู่ · 📊 ราคา AH: {max(0, len(ah_table.splitlines()) - 2) if ah_table else 0} คู่")
+    print(f"🕐 ตารางเวลาแข่ง: {len(time_map)} คู่ · 📊 ราคา AH: {max(0, len(ah_table.splitlines()) - 3) if ah_table else 0} คู่")
+    # 🚨 กันเงียบ: prompt สั่งว่า "หาเวลาไม่เจอ = ตัดคู่ทิ้ง" → ถ้าตารางเวลาว่าง Gemini จะตัดทิ้งหมดแล้วเราไม่รู้ตัว
+    #    (เคยเกิดจริง: Forebet เปลี่ยนรูปแบบวันที่ → regex จับไม่ได้สักคู่ → บอทเงียบไปเฉยๆ)
+    if not time_map:
+        print("❌ ดึงเวลาแข่งไม่ได้สักคู่ — น่าจะ Forebet เปลี่ยนรูปแบบลิงก์/วันที่อีกแล้ว (ดู _LINK_PAT)")
+        send_telegram_message("⚠️ วันนี้อ่านเวลาแข่งจาก Forebet ไม่ได้สักคู่ (เว็บน่าจะเปลี่ยนรูปแบบ) — ข้ามรอบนี้ ยังไม่ส่งทีเด็ดครับ")
+        return
 
     if not combined.strip():
         print("⚠️ ดึงข้อมูลไม่ได้เลย")
