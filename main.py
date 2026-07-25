@@ -282,9 +282,13 @@ def fmt_time_table(tmap):
 #      ทำเอง ไม่ให้ AI ทำ เพราะ (ก) ไม่ต้องเปลืองโทเคนสอน (ข) AI มั่ว/ลืมได้ แต่โค้ดไม่ลืม
 #      ธงเอาจากรูปธงของ Forebet เอง (images/fc/mx.png → mx → 🇲🇽) แม่นกว่าเดาจากชื่อลีก
 # ==========================================
+#      ตัวย่อใต้ธงบอกด้วยว่าเป็น "ชาติ" หรือ "รายการรวมชาติ":
+#        Kr3 / AuA / CzC  = ตัวแรกใหญ่ตัวสองเล็ก → ธงชาติ
+#        CLW / EL / WCQ    = ใหญ่ติดกัน ≥2 ตัว    → ถ้วย 🏆 (ไม่ใช่ของชาติใดชาติเดียว)
 _FLAG_OR_LINK = re.compile(
     r'images/fc/(?P<cc>[a-z0-9_\-]+)\.png'
-    r'|football/matches/' + _SLUG + r'+?-(?P<mid>\d+)\)')
+    r'|^\s*(?P<ab>[A-Z]{2,4}\d?)\s*$'
+    r'|football/matches/' + _SLUG + r'+?-(?P<mid>\d+)\)', re.M)
 # ธงย่อยของอังกฤษ (ไม่มีใน regional-indicator ปกติ) + ธงรวมทวีป/ฟุตบอลโลก (Forebet ใช้เลข)
 _FLAG_SPECIAL = {
     "gb-en": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "gb-eng": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "gb-sct": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
@@ -302,15 +306,62 @@ def cc_to_flag(cc):
         return chr(0x1F1E6 + ord(cc[0]) - 97) + chr(0x1F1E6 + ord(cc[1]) - 97)
     return "🏆"      # เลข (13.png) = รายการรวมหลายชาติ เช่น UEFA/CONMEBOL
 
+#    ตัวสำรอง: ถ้าอ่านรูปธงไม่เจอ → เทียบจาก "ชื่อลีก/ชื่อประเทศ" ที่ Forebet พิมพ์ไว้
+#    (อิโมจิธงสร้างจากรหัส 2 ตัวได้ทุกประเทศ ไม่ต้องมีตารางอิโมจิ — ต้องรู้แค่รหัสประเทศ)
+_LEAGUE_CC = {
+    "england": "gb-en", "premier league": "gb-en", "efl": "gb-en", "scotland": "gb-sct",
+    "wales": "gb-wls", "northern ireland": "gb-nir", "ireland": "ie", "spain": "es",
+    "laliga": "es", "la liga": "es", "italy": "it", "serie a": "it", "germany": "de",
+    "bundesliga": "de", "france": "fr", "ligue 1": "fr", "netherlands": "nl",
+    "eredivisie": "nl", "portugal": "pt", "belgium": "be", "turkey": "tr", "greece": "gr",
+    "switzerland": "ch", "austria": "at", "denmark": "dk", "norway": "no", "sweden": "se",
+    "finland": "fi", "poland": "pl", "czech": "cz", "romania": "ro", "bulgaria": "bg",
+    "croatia": "hr", "serbia": "rs", "slovakia": "sk", "slovenia": "si", "hungary": "hu",
+    "ukraine": "ua", "russia": "ru", "estonia": "ee", "latvia": "lv", "lithuania": "lt",
+    "iceland": "is", "israel": "il", "cyprus": "cy", "albania": "al", "armenia": "am",
+    "azerbaijan": "az", "georgia": "ge", "kazakhstan": "kz", "belarus": "by",
+    "brazil": "br", "argentina": "ar", "chile": "cl", "mexico": "mx", "colombia": "co",
+    "peru": "pe", "uruguay": "uy", "paraguay": "py", "bolivia": "bo", "ecuador": "ec",
+    "venezuela": "ve", "usa": "us", "united states": "us", "mls": "us", "canada": "ca",
+    "costa rica": "cr", "guatemala": "gt", "honduras": "hn", "panama": "pa",
+    "el salvador": "sv", "jamaica": "jm", "japan": "jp", "korea": "kr", "china": "cn",
+    "australia": "au", "new zealand": "nz", "india": "in", "indonesia": "id",
+    "thailand": "th", "vietnam": "vn", "malaysia": "my", "singapore": "sg",
+    "philippines": "ph", "hong kong": "hk", "uzbekistan": "uz", "iran": "ir", "iraq": "iq",
+    "saudi": "sa", "qatar": "qa", "uae": "ae", "emirates": "ae", "kuwait": "kw",
+    "bahrain": "bh", "oman": "om", "jordan": "jo", "lebanon": "lb", "syria": "sy",
+    "egypt": "eg", "morocco": "ma", "algeria": "dz", "tunisia": "tn", "nigeria": "ng",
+    "ghana": "gh", "south africa": "za", "kenya": "ke", "tanzania": "tz", "zambia": "zm",
+    "zimbabwe": "zw", "cameroon": "cm", "senegal": "sn", "ivory coast": "ci",
+    "somalia": "so", "uefa": "eu", "conmebol": "13", "concacaf": "13", "afc": "13",
+    "caf": "13", "world": "world", "friendly": "world", "international": "world",
+}
+
+def league_to_cc(name):
+    """ชื่อลีก → รหัสประเทศ (จับคำยาวก่อน กัน 'ireland' ชน 'northern ireland')"""
+    low = (name or "").lower()
+    for key in sorted(_LEAGUE_CC, key=len, reverse=True):
+        if key in low:
+            return _LEAGUE_CC[key]
+    return None
+
 def collect_flags(raw, fmap):
     """เก็บ id คู่ → ธง โดยยึด 'รูปธงที่โผล่ก่อนลิงก์คู่นั้น' (Forebet วางธงหัวลีกไว้เหนือคู่)"""
     if not raw:
         return
     cc = None
+    just_flag = False       # ตัวย่อเชื่อได้เฉพาะตัวที่ตามหลังรูปธงติดกัน (กัน HT/COEF หลอก)
     for m in _FLAG_OR_LINK.finditer(raw):
         if m.group("cc"):
-            cc = m.group("cc")
-        elif cc:
+            cc, just_flag = m.group("cc"), True
+            continue
+        if m.group("ab"):
+            if just_flag:
+                cc = "13"   # ตัวย่อใหญ่ทั้งคำ (CLW/EL/WCQ) = รายการรวมชาติ → ถ้วย
+            just_flag = False
+            continue
+        just_flag = False
+        if cc:
             fmap.setdefault(m.group("mid"), cc)
 
 # ---------- หน้าบอลสด: id → (นาที, สกอร์, สกอร์ครึ่งแรก) ----------
@@ -370,8 +421,9 @@ def decorate_tips(text, tips_raw, fmap, live_map):
     meta = []
     for t in tips:
         mid = str(t.get("id") or "")
+        cc = fmap.get(mid) or league_to_cc(t.get("league"))   # ธงจากรูป → ไม่มีก็เทียบชื่อลีก
         meta.append((_nm(t.get("home")), _nm(t.get("away")),
-                     cc_to_flag(fmap.get(mid)), live_map.get(mid, "")))
+                     cc_to_flag(cc), live_map.get(mid, "")))
     out = []
     for line in text.splitlines():
         out.append(line)
