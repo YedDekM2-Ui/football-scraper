@@ -403,6 +403,67 @@ def collect_odds(raw, omap):
                 omap[mid] = de.group(1)
                 break
 
+# ==========================================
+# 4.8 เก็บ "ตัวเลขดิบทุกตลาดต่อคู่" → id → {x2, ah, ou, btts} → ส่งไปเก็บในชีต
+#     ไว้ให้ฝั่ง GAS ตรวจ "ธงขัดแย้งข้ามตลาด" เอง (กฎอยู่ที่ GAS → แก้กฎได้โดยไม่ต้อง push scraper ใหม่)
+#     วัดจากหน้าจริงที่ dump มา (นับ offset จากบรรทัดลิงก์คู่):
+#       under-over-goals : +2 '69 31' = Under% Over% (เส้นมาตรฐาน 2.5) · +8 '1.53' = avg goals
+#       both-to-score    : +2 '51 49' = No% Yes%   ← ยืนยันจากแถวที่ pick 'No 3-0' กับ 'Yes 1-2'
+#       asian-handicap   : +2 '34%' = ความมั่นใจ · +4 'Home -1.5 3-0' = ฝั่ง|เส้น|สกอร์คาด
+#       top-football-tips: +2 '71 20 10' = 1x2 บ้าน/เสมอ/เยือน ← หน้าเดียวที่ 1x2 ผูกกับลิงก์คู่ได้
+#     ⚠️ หน้า predictions-1x2 ไม่มีลิงก์และไม่มีชื่อทีมเลย (มีแต่แถวเลขลอยๆ) → จับคู่กับ id ไม่ได้
+#        1x2 จึงมีแค่คู่ที่ติดหน้า top (~22 คู่) — คู่อื่นเว้นว่าง ไม่ใช่บั๊ก
+#     ⚠️ ยังไม่ให้ Gemini เห็นตัวเลขชุดนี้ (เหมือนตอนเพิ่มเรท) — เก็บวัดก่อนว่าธงขัดแย้งทำนายพลาดจริงไหม
+_NUM2_RE = re.compile(r'^(\d{1,3})\s+(\d{1,3})$')
+_NUM3_RE = re.compile(r'^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})$')
+_CONF_RE = re.compile(r'^(\d{1,3})%$')
+_AVG_RE = re.compile(r'^(\d{1,2}\.\d{1,2})$')
+_AHPICK_RE = re.compile(r'^(Home|Away)\s+([+-]?\d+(?:\.\d+)?)\b')
+
+def collect_markets(raw, url, mkt):
+    if not raw:
+        return
+    if "under-over" in url:
+        kind = "ou"
+    elif "both-to-score" in url:
+        kind = "btts"
+    elif "asian-handicap" in url:
+        kind = "ah"
+    elif "top-football-tips" in url:
+        kind = "x2"
+    else:
+        return
+    lines = [l.strip() for l in raw.splitlines()]
+    link_re = re.compile('^' + _LINK_PAT + '$')
+    for i, l in enumerate(lines):
+        m = link_re.match(l)
+        if not m:
+            continue
+        d = mkt.setdefault(m.group(6), {})
+        if kind in d:      # คู่ซ้ำในหน้าเดียวกัน (Forebet ลิสต์ทั้งวันนี้/พรุ่งนี้) → เอาแถวแรกพอ
+            continue
+        c2 = lines[i + 2] if i + 2 < len(lines) else ""
+        c4 = lines[i + 4] if i + 4 < len(lines) else ""
+        c8 = lines[i + 8] if i + 8 < len(lines) else ""
+        if kind == "ou":
+            n = _NUM2_RE.match(c2)
+            if n:
+                a = _AVG_RE.match(c8)
+                d["ou"] = n.group(1) + "/" + n.group(2) + ("|" + a.group(1) if a else "")
+        elif kind == "btts":
+            n = _NUM2_RE.match(c2)
+            if n:
+                d["btts"] = n.group(1) + "/" + n.group(2)
+        elif kind == "x2":
+            n = _NUM3_RE.match(c2)
+            if n:
+                d["x2"] = n.group(1) + "/" + n.group(2) + "/" + n.group(3)
+        elif kind == "ah":
+            a = _AHPICK_RE.match(c4)
+            if a:
+                p = _CONF_RE.match(c2)
+                d["ah"] = a.group(1) + "|" + a.group(2) + ("|" + p.group(1) if p else "")
+
 # ---------- หน้าบอลสด: id → (นาที, สกอร์, สกอร์ครึ่งแรก) ----------
 LIVE_URL = "https://www.forebet.com/en/live-football-tips"
 _LIVE_SCORE = re.compile(r'^\*\*(\d+)\s*[-–]\s*(\d+)\*\*\s*(?:\((\d+)\s*[-–]\s*(\d+)\))?')
@@ -851,6 +912,7 @@ def main():
     time_map = {}   # slug -> (ชื่อคู่, เวลาไทย) จากทุกลิงก์
     flag_map = {}   # id -> รหัสประเทศ (จากรูปธงของ Forebet)
     odds_map = {}   # id -> เรทน้ำ (coef.) → ส่งไปเก็บในชีต ใช้คิดกำไรจริง ไม่ใช่แค่ถูก/ผิด
+    mkt_map = {}    # id -> {x2, ah, ou, btts} ตัวเลขดิบทุกตลาด → ชีตเอาไปตรวจธงขัดแย้ง
     for index, url in enumerate(urls, 1):
         print(f"{index}/{len(urls)} ดึง: {url}")
         raw = scrape_football_data(url)
@@ -860,6 +922,7 @@ def main():
             combined += f"\n\n===== ตลาด: {label} =====\n{_compact(raw)}"
             collect_times(raw, time_map)      # เก็บเวลาแข่งจากทุกหน้า
             collect_flags(raw, flag_map)      # เก็บธงชาติตามลีก
+            collect_markets(raw, url, mkt_map)  # เก็บ %/เส้น ของแต่ละตลาด (หน้าที่ไม่เกี่ยวจะ return ทันที)
             if "asian-handicap" in url:
                 ah_raw = raw   # เก็บดิบไว้ให้ parser (ก่อน compact)
                 collect_odds(raw, odds_map)   # เรทเอาจากหน้านี้เท่านั้น (วัดตำแหน่งคอลัมน์มาแล้ว หน้าอื่นเลย์เอาต์ต่าง)
@@ -871,7 +934,9 @@ def main():
     if live_raw:
         collect_flags(live_raw, flag_map)
         live_map = parse_live_table(live_raw)
+    nx2 = sum(1 for v in mkt_map.values() if v.get("x2"))
     print(f"🔴 บอลสด: {len(live_map)} คู่ · 🏳️ ธง: {len(flag_map)} คู่ · 💰 เรท: {len(odds_map)} คู่")
+    print(f"📐 ตัวเลขตลาด: {len(mkt_map)} คู่ (มี 1x2 {nx2} คู่ — 1x2 มีเฉพาะคู่ที่ติดหน้า top)")
 
     ah_table = parse_ah_table(ah_raw)
     time_table = fmt_time_table(time_map)
@@ -910,10 +975,10 @@ def main():
     print("📲 ส่งเข้า Telegram...")
     send_telegram_message(result)  # Gemini คุมหัวข้อ+รูปแบบทั้งหมดตาม prompt แล้ว
     if tips_raw:
-        log_tips_to_piktax(tips_raw, odds_map)
+        log_tips_to_piktax(tips_raw, odds_map, mkt_map)
 
 
-def log_tips_to_piktax(raw, odds_map=None):
+def log_tips_to_piktax(raw, odds_map=None, mkt_map=None):
     """ส่ง JSON ทีเด็ดไปบันทึกชีตที่ PIKTAX (doPost -> logFootballTips_)"""
     if not PIKTAX_STATE_URL:
         return
@@ -927,17 +992,29 @@ def log_tips_to_piktax(raw, odds_map=None):
         print(f"⚠️ JSON tips ผิดรูปแบบ: {e}")
         return
     # แปะเรทน้ำเข้าไปเอง (ไม่ให้ AI กรอก — มันจะมั่วเลข) · หาไม่เจอปล่อยว่าง ชีตจะข้ามคู่นั้นตอนคิดกำไร
-    nod = 0
-    if odds_map:
-        for t in tips:
-            o = odds_map.get(str(t.get("id") or "").strip(), "")
-            if o:
-                t["odds"] = o
-                nod += 1
+    nod = nmk = 0
+    for t in tips:
+        mid = str(t.get("id") or "").strip()
+        o = (odds_map or {}).get(mid, "")
+        if o:
+            t["odds"] = o
+            nod += 1
+        mk = (mkt_map or {}).get(mid) or {}
+        if mk:
+            # ชื่อคีย์สั้นๆ ฝั่ง GAS อ่านตรงนี้ (logFootballTips_) → คอลัมน์ O..R แล้วคิดธงขัดที่ S
+            if mk.get("x2"):
+                t["m1x2"] = mk["x2"]
+            if mk.get("ah"):
+                t["mah"] = mk["ah"]
+            if mk.get("ou"):
+                t["mou"] = mk["ou"]
+            if mk.get("btts"):
+                t["mbtts"] = mk["btts"]
+            nmk += 1
     try:
         base = PIKTAX_STATE_URL.split("?")[0]
         requests.post(base, json={"fbtips": tips}, timeout=60)
-        print(f"📝 ส่งบันทึก {len(tips)} คู่ลงชีตแล้ว (มีเรท {nod}/{len(tips)})")
+        print(f"📝 ส่งบันทึก {len(tips)} คู่ลงชีตแล้ว (มีเรท {nod}/{len(tips)} · มีตัวเลขตลาด {nmk}/{len(tips)})")
     except Exception as e:
         print(f"⚠️ ส่งบันทึกชีตไม่ได้: {e}")
 
