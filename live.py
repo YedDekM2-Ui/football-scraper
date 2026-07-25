@@ -1,8 +1,14 @@
 import os
+import json
 import time
 import urllib.parse
 import requests
-from google import genai
+
+# SDK ใหม่ (google-genai) — ไม่มีก็ยังวิ่งต่อได้ด้วย REST (รองรับคีย์ยุคใหม่ AQ.* ด้วย)
+try:
+    from google import genai
+except Exception:
+    genai = None
 
 # ===== บอลสด (Live) — ดึง forebet live-football-tips → วิเคราะห์สด → เตือนเฉพาะที่เข้าเกณฑ์ =====
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -25,6 +31,104 @@ LIVE_SOURCES = [
     "https://www.forebet.com/en/football-tips-and-predictions-for-today/double-chance-predictions",  # ค่า "ไม่แพ้" (1X/X2)
     "https://www.forebet.com/en/football-tips-and-predictions-for-today/predictions-under-over-goals",# ค่า สูง/ต่ำ
 ]
+
+# ---------- คีย์ Gemini หลายตัว + ยิงหลายเส้นทาง (รองรับคีย์ยุคใหม่ AQ.*) ----------
+#   Google ย้ายจาก Standard key (AIza...) → Auth key (AQ....) และ AI Studio ออกคีย์ AQ ให้อัตโนมัติแล้ว
+#   SDK/ไลบรารีรุ่นเก่าบางตัวตรวจว่า "ต้องขึ้นต้น AIza" → เด้งทั้งที่คีย์ถูก
+#   แก้: ลอง 3 เส้นทางไล่ลงมา (SDK → REST+header → REST+?key) เฉพาะตอนที่เด้งเพราะ "ยืนยันตัวตน"
+#   (โค้ดชุดนี้ก๊อปมาจาก main.py หัวข้อ 4.9/4.92 ตรงๆ — ตั้งใจให้ซ้ำ จะได้ไม่ต้องมีไฟล์กลางที่ลืมอัปแล้วพังทั้งคู่)
+def gemini_keys():
+    keys, seen = [], set()
+    for k in os.environ.get("GEMINI_API_KEY", "").split(","):
+        k = k.strip()
+        if k and k not in seen:
+            keys.append(k); seen.add(k)
+    for i in range(2, 8):
+        k = os.environ.get(f"GEMINI_API_KEY{i}", "").strip()
+        if k and k not in seen:
+            keys.append(k); seen.add(k)
+    return keys
+
+GEMINI_REST = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+class QuotaFull(Exception):
+    """โควตาวันนี้ของคีย์นี้เต็ม (429) — ให้สลับคีย์ ไม่ใช่สลับเส้นทาง"""
+    pass
+
+def _is_quota_err(msg):
+    m = (msg or "").upper()
+    return "429" in m or "RESOURCE_EXHAUSTED" in m or "QUOTA" in m
+
+def _is_auth_err(msg):
+    m = (msg or "").upper()
+    return any(s in m for s in (
+        "ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_INVALID", "INVALID_API_KEY",
+        "UNAUTHENTICATED", "PERMISSION_DENIED", "EXPECTED OAUTH",
+        "401", "403", "MUST START WITH", "AIZA",
+    ))
+
+def _rest_generate(key, model, prompt, temperature, use_header):
+    """ยิงตรงผ่าน REST · use_header=True → x-goog-api-key (แนะนำสำหรับ AQ) · False → ?key="""
+    url = GEMINI_REST.format(model=model)
+    headers = {"Content-Type": "application/json"}
+    params = {}
+    if use_header:
+        headers["x-goog-api-key"] = key
+    else:
+        params["key"] = key
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": temperature},
+    }
+    r = requests.post(url, headers=headers, params=params, json=body, timeout=180)
+    if r.status_code == 429:
+        raise QuotaFull(r.text[:300])
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts).strip()
+    if not text:
+        raise RuntimeError(f"ตอบกลับว่างเปล่า: {json.dumps(data)[:300]}")
+    return text
+
+def gemini_generate(key, model, prompt, temperature=0.15):
+    """คืน (ข้อความ, ชื่อเส้นทางที่ใช้ได้) · โยน QuotaFull ถ้าโควตาเต็ม"""
+    errors = []
+    routes = []
+    if genai is not None:
+        routes.append("sdk")
+    routes += ["rest-header", "rest-query"]
+    for route in routes:
+        try:
+            if route == "sdk":
+                client = genai.Client(api_key=key)
+                kwargs = {}
+                try:
+                    from google.genai import types as _gt
+                    kwargs["config"] = _gt.GenerateContentConfig(temperature=temperature)
+                except Exception:
+                    pass
+                resp = client.models.generate_content(model=model, contents=prompt, **kwargs)
+                text = (getattr(resp, "text", "") or "").strip()
+                if not text:
+                    raise RuntimeError("SDK ตอบกลับว่างเปล่า")
+                return text, route
+            return _rest_generate(key, model, prompt, temperature, route == "rest-header"), route
+        except QuotaFull:
+            raise
+        except Exception as e:
+            msg = str(e)
+            if _is_quota_err(msg):
+                raise QuotaFull(msg)
+            errors.append(f"{route}: {msg[:160]}")
+            if not _is_auth_err(msg):
+                break
+    hint = ""
+    if str(key).startswith("AQ."):
+        hint = ("\n   💡 คีย์นี้เป็นแบบใหม่ (AQ.) — ถ้าเด้งทุกเส้นทางแปลว่าตัวคีย์เองยังไม่เปิดสิทธิ์ "
+                "ให้ไปเปิด Generative Language API ในโปรเจกต์ Google Cloud ของคีย์นั้น หรือออกคีย์ใหม่จาก AI Studio")
+    raise RuntimeError("ยิง Gemini ไม่ผ่านสักเส้นทาง →\n   " + "\n   ".join(errors) + hint)
 
 # ---------- สถานะเสียง (sticky · default เงียบ) ----------
 def get_sound_on():
@@ -144,15 +248,17 @@ N. เจ้าบ้าน  H - A  เยือน   (นาที X')
 ข้อมูลดิบ:
 {raw_text}
 """
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    for model in GEMINI_MODELS:
-        try:
-            resp = client.models.generate_content(model=model, contents=prompt)
-            if resp.text:
-                print(f"🤖 ใช้รุ่น {model}")
-                return resp.text
-        except Exception as em:
-            print(f"⚠️ รุ่น {model} ใช้ไม่ได้: {em}")
+    for key in gemini_keys():
+        for model in GEMINI_MODELS:
+            try:
+                text, route = gemini_generate(key, model, prompt)
+                print(f"🤖 ใช้รุ่น {model} · เส้นทาง {route}")
+                return text
+            except QuotaFull:
+                print("🛑 คีย์นี้โควตาเต็ม → สลับคีย์ถัดไป")
+                break
+            except Exception as em:
+                print(f"⚠️ รุ่น {model} ใช้ไม่ได้: {str(em)[:200]}")
     return "NONE"
 
 def main():
