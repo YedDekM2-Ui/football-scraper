@@ -86,22 +86,27 @@ def fb_session():
     raise RuntimeError(f"เปิดหน้า Forebet ไม่ได้ ({err}) และไม่มี PIKTAX_STATE_URL ให้อ้อม")
 
 
-def _ff_fetch(url, timeout=240, tries=2):
+def _ff_fetch(url, timeout=240, tries=3):
     """ดึงผ่าน PIKTAX ?ff= — GAS ใช้ IP ของ Google ยิงเข้า Jina แล้ว Jina ยิง Forebet
-    ช้ากว่าสาย direct (10-30 วิ/ก้อน) แต่ทะลุ Cloudflare ได้"""
+    ช้ากว่าสาย direct (10-30 วิ/ก้อน) แต่ทะลุ Cloudflare ได้
+
+    ⚠️ วัดจาก Actions 26 ก.ค.: Jina สะดุดเป็นก้อนได้ — tp=uo คืน 200 แต่ตัวเปล่า 8 bytes
+       retry รอบเดียวไม่พอ → 3 รอบ ถอยยาวขึ้นเรื่อยๆ (Jina ต้องมีเวลาเคลียร์)"""
+    backoff = [6, 15, 25]
     last = ""
+    u = FF_BASE + "?ff=" + urllib.parse.quote(url, safe="")
     for i in range(tries):
-        u = FF_BASE + "?ff=" + urllib.parse.quote(url, safe="")
         try:
             r = requests.get(u, timeout=timeout)
             if r.status_code == 200 and len(r.content) > 500:
                 return r.text
-            last = f"HTTP {r.status_code} · {len(r.content)} bytes"
+            # เก็บเนื้อสั้นๆ ไว้ด้วย — เวลาพังจะได้รู้ว่า GAS ว่า อะไร ไม่ใช่เห็นแค่ขนาด
+            last = f"HTTP {r.status_code} · {len(r.content)} bytes · {r.text[:60]!r}"
         except Exception as e:
             last = str(e)[:120]
         if i < tries - 1:
-            time.sleep(4)
-    raise RuntimeError(f"?ff= ไม่ได้ผล ({last})")
+            time.sleep(backoff[min(i, len(backoff) - 1)])
+    raise RuntimeError(f"?ff= ไม่ได้ผล {tries} รอบ ({last})")
 
 
 def _json_from_jina(txt):
@@ -155,12 +160,8 @@ def fb_fetch_day(day, markets=None, sess=None, pause=None):
     if pause is None:
         pause = 2.5 if mode == "ff" else 1.0   # สาย ff ผ่าน Jina → เว้นจังหวะกันโดนลิมิต
     matches, leagues, okmk = {}, {}, []
-    for i, tp in enumerate(markets):
-        try:
-            rows, lg = fb_feed(route, tp, day)
-        except Exception as e:
-            print(f"⚠️ Forebet API tp={tp}: {e}")
-            continue
+
+    def soak(tp, rows, lg):
         if lg:
             leagues.update(lg)
         okmk.append(f"{tp}:{len(rows)}")
@@ -174,7 +175,32 @@ def fb_fetch_day(day, markets=None, sess=None, pause=None):
                 # ก้อนแรกชนะเสมอ (1x2 ครบสุด) — ตลาดหลังเติมเฉพาะฟิลด์ที่ยังไม่มี/ยังว่าง
                 if k not in d or d[k] in (None, "", []):
                     d[k] = v
+
+    failed = []
+    for i, tp in enumerate(markets):
+        try:
+            rows, lg = fb_feed(route, tp, day)
+        except Exception as e:
+            print(f"⚠️ Forebet API tp={tp}: {e}")
+            failed.append(tp)
+        else:
+            soak(tp, rows, lg)
         if i < len(markets) - 1:
             time.sleep(pause)
+
+    # รอบเก็บตก — ตลาดที่ล่มค่อยวนซ้ำท้ายสุด (ตอนนั้น Jina มักหายสะดุดแล้ว)
+    # ยอมช้าเพิ่ม 30 วิ ดีกว่าเสียทั้งตลาด เช่น uo หาย = ทิปสูง/ต่ำหายทั้งวัน
+    if failed:
+        print(f"🔁 วนเก็บตกตลาดที่ล่ม: {', '.join(failed)}")
+        time.sleep(pause * 2)
+        for tp in failed:
+            try:
+                rows, lg = fb_feed(route, tp, day)
+            except Exception as e:
+                print(f"❌ tp={tp} เก็บตกไม่ได้: {e}")
+            else:
+                soak(tp, rows, lg)
+                time.sleep(pause)
+
     print(f"📡 Forebet API [{mode}] {day} → {len(matches)} คู่ ({' · '.join(okmk) or 'ไม่ได้เลย'})")
     return matches, leagues
