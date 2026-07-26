@@ -1,0 +1,41 @@
+name: CF Probe (Forebet API)
+
+# เทสต์เดี่ยว — ไม่แตะ Gemini ไม่กินโควตา · กด Run แล้วดูผลได้ 3 ทาง:
+#   1) log ของ job  2) Summary ของ run  3) Telegram  4) ไฟล์ probe_out.md ที่ commit กลับ repo
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - run: pip install requests
+
+      - name: Probe Cloudflare
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+        run: python cf_probe.py
+
+      - name: ใส่ผลลง Summary
+        if: always()
+        run: cat probe_out.md >> "$GITHUB_STEP_SUMMARY" || echo "ไม่มี probe_out.md"
+
+      - name: commit ผลกลับ repo
+        if: always()
+        run: |
+          git config user.name "cf-probe"
+          git config user.email "cf-probe@users.noreply.github.com"
+          git add probe_out.md || true
+          git commit -m "cf probe result" || echo "ไม่มีอะไรเปลี่ยน"
+          git push || echo "push ไม่ผ่าน (GITHUB_TOKEN อ่านได้อย่างเดียว) — ดูผลจาก Summary/Telegram แทน"
