@@ -33,6 +33,10 @@ if not GEMINI_API_KEY:
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     raise ValueError("❌ Error: ไม่พบข้อมูล Telegram Bot หรือ Chat ID ใน GitHub Secrets")
 
+# เวลาไทยตอนที่ "อ่านสกอร์/ข้อมูลจาก Forebet" รอบนี้ — แปะท้ายทีเด็ดเพื่อให้เทียบกับนาฬิกา Telegram
+# แล้วรู้ทันทีว่าข้อมูลเก่ากี่นาที (บางคู่สกอร์เปลี่ยนไปแล้วระหว่างที่ Gemini กำลังคิด)
+FB_SNAP = ""
+
 TELEGRAM_LIMIT = 4000  # เผื่อจากเพดานจริง 4096
 MAX_MATCHES = 20       # คัดคู่เด่นสูงสุดกี่คู่ (แล้วแต่วัน บางวันน้อยกว่าได้ · เด่นสุดไว้บน)
 # รุ่น Gemini (ฟรี) · flash-latest = alias รุ่นล่าสุด · ตัดรุ่นซ้ำ/ตายออก (กันเผาโควตา 20/วัน)
@@ -1073,9 +1077,13 @@ def fetch_via_api(time_map, flag_map, odds_map, mkt_map):
         print(f"⚠️ เปิด session Forebet ไม่ได้: {e}")
         return "", "", None
     matches, leagues = {}, {}
+    global FB_SNAP
     for off in (0, 1):
         day = (start + timedelta(days=off)).strftime("%Y-%m-%d")
         m, lg = fbapi.fb_fetch_day(day, sess=sess)
+        if off == 0:
+            # ก้อนวันนี้ = ก้อนที่มีสกอร์สด/ผลจบ → จับเวลาตรงนี้เป็น "เวลาข้อมูล" ของรอบ
+            FB_SNAP = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%H:%M")
         leagues.update(lg)
         for k, v in m.items():
             if k in matches:
@@ -1188,6 +1196,10 @@ def main():
 
     tips_raw = patch_ids(tips_raw, time_map)   # เติม id ก่อนใครใช้ — ธง/LIVE/เรท/คีย์ชีต คีย์เป็น id ทั้งหมด
     result = decorate_tips(result, tips_raw, flag_map, live_map)  # เติมธง + บรรทัด LIVE (ทำเอง ไม่ให้ AI มั่ว)
+
+    # 🕒 เวลาข้อมูลจริงจาก Forebet (ไม่ใช่เวลาที่กดสั่ง) — เทียบกับเวลาที่ Telegram โชว์ = รู้ดีเลย์กี่นาที
+    if FB_SNAP:
+        result = result.rstrip() + f"\n\n🕒 ข้อมูล/สกอร์จาก Forebet ณ {FB_SNAP} น."
 
     print("📲 ส่งเข้า Telegram...")
     send_telegram_message(result)  # Gemini คุมหัวข้อ+รูปแบบทั้งหมดตาม prompt แล้ว
