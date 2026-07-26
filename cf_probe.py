@@ -76,26 +76,27 @@ def main():
     except Exception as e:
         say(f"- **ยิงตรงไม่ priming คุกกี้**: พัง — {e}")
 
-    # ---------- 2) เปิดหน้า HTML เพื่อรับคุกกี้ ----------
+    # ---------- 2) ให้ forebet_api เลือกเส้นทางเอง (direct → ff) ----------
+    say(f"- **PIKTAX_STATE_URL (สำหรับ `?ff=`)**: {'ตั้งแล้ว' if fb.FF_BASE else '❌ ไม่ได้ตั้ง'}")
     t0 = time.time()
     try:
-        sess = fb.fb_session()
-        say(f"- ✅ **เปิดหน้า HTML (priming)**: ผ่าน · {time.time() - t0:.1f}s · "
-            f"คุกกี้ที่ได้: {', '.join(sess.cookies.keys()) or 'ไม่มีเลย'}")
+        route = fb.fb_session()
+        say(f"- ✅ **เลือกเส้นทางได้**: `{route.mode}` · {time.time() - t0:.1f}s"
+            + (f" · คุกกี้: {', '.join(route.sess.cookies.keys()) or 'ไม่มี'}" if route.mode == "direct" else ""))
     except Exception as e:
-        say(f"- ❌ **เปิดหน้า HTML (priming)**: ไม่ผ่าน — {e}")
-        VERDICT.append("❌ Cloudflare บล็อกตั้งแต่หน้า HTML → IP Actions ใช้สายหลักไม่ได้")
+        say(f"- ❌ **หาเส้นทางไม่ได้เลย**: {e}")
+        VERDICT.append("❌ ตายทั้ง direct และ ?ff= → บอทจะตกลงสาย Jina 42 คู่")
         jina_check()
         finish()
         return
 
-    # ---------- 3) ยิง API จริง ทุกตลาด ----------
+    # ---------- 3) ยิงจริงทุกตลาด ----------
     total = {}
     okmk, badmk = [], []
     for i, tp in enumerate(fb.FB_MARKETS):
         t1 = time.time()
         try:
-            rows, lg = fb.fb_feed(sess, tp, day)
+            rows, lg = fb.fb_feed(route, tp, day)
             okmk.append(f"{tp}:{len(rows)}")
             say(f"- ✅ `tp={tp}` → {len(rows)} แถว · {len(lg)} ลีก · {time.time() - t1:.1f}s")
             for r in rows:
@@ -106,17 +107,17 @@ def main():
             badmk.append(tp)
             say(f"- ❌ `tp={tp}` → {e}")
         if i < len(fb.FB_MARKETS) - 1:
-            time.sleep(1.0)
+            time.sleep(2.5 if route.mode == "ff" else 1.0)
 
     say("")
-    say(f"- **รวมคู่ไม่ซ้ำ (วัน {day} เวลายุโรป)**: **{len(total)}** คู่")
+    say(f"- **รวมคู่ไม่ซ้ำ (วัน {day} เวลายุโรป)**: **{len(total)}** คู่ · รวมเวลา {time.time() - t0:.0f}s")
 
     if len(total) >= 300:
-        VERDICT.append(f"✅ ผ่าน! Actions ยิง getrs.php ได้ {len(total)} คู่ ({' '.join(okmk)})")
+        VERDICT.append(f"✅ ผ่าน! ({route.mode}) ได้ {len(total)} คู่ · {' '.join(okmk)}")
     elif total:
-        VERDICT.append(f"⚠️ ผ่านแบบไม่เต็ม: {len(total)} คู่ · ตลาดที่ล่ม: {', '.join(badmk) or '-'}")
+        VERDICT.append(f"⚠️ ผ่านแบบไม่เต็ม ({route.mode}): {len(total)} คู่ · ตลาดที่ล่ม: {', '.join(badmk) or '-'}")
     else:
-        VERDICT.append("❌ priming ผ่าน แต่ getrs.php ไม่คืนข้อมูลเลย")
+        VERDICT.append(f"❌ เส้นทาง {route.mode} เปิดได้ แต่ไม่ได้ข้อมูลเลย")
 
     jina_check()
     finish()
@@ -131,7 +132,8 @@ def jina_check():
     except Exception as e:
         say(f"- **สายสำรอง Jina ยิงตรงจาก runner**: พัง — {e}")
 
-    base = os.environ.get("PIKTAX_STATE_URL", "").strip()
+    # ⚠️ secret อาจมี ?key=.. ต่อท้าย — ต้องตัด query ก่อน ไม่งั้นได้ 32 bytes (บั๊กรอบแรก)
+    base = os.environ.get("PIKTAX_STATE_URL", "").strip().split("?")[0]
     if base:
         try:
             import urllib.parse
