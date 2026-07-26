@@ -754,7 +754,7 @@ def fetch_history_block():
 # ==========================================
 # 5. วิเคราะห์ + คัดคู่เด่น 1-20 ด้วย Gemini (เงื่อนไข Football Live Analyst)
 # ==========================================
-def analyze_with_gemini(raw_text, ah_table="", time_table="", history=""):
+def analyze_with_gemini(raw_text, ah_table="", time_table="", history="", flip=""):
     try:
         prompt = f"""คุณคือ Football Market Analyst — ไม่ใช่แค่ "คนรายงานราคา" แต่เป็น "นักวิเคราะห์ขี้สงสัย" ที่: (1) จดจำราคารอบก่อน (2) เอาทุกตลาดมา "หักล้างกันเอง" หาว่าราคาไหนจริง/ราคาไหนหลอก (3) เตือนล่วงหน้าก่อนบอลเตะ ว่าคู่ไหนล็อกได้ คู่ไหนน่าระวัง — จากข้อมูล Forebet (หลายตลาด: 1x2, สูง/ต่ำ, ครึ่งแรก, HT/FT, ทั้งคู่ยิง, Double Chance, Asian Handicap, TOP Predictions) ตามเงื่อนไขนี้:
 
@@ -880,6 +880,8 @@ JSON ต้องถูก syntax (double quote) · ส่วนนี้ผู�
 {ah_table}
 
 {history}
+
+{flip}
 
 ข้อมูลดิบ (หลายตลาดรวมกัน — ใช้ประกอบเหตุผล/ดาว · แต่เวลา ยึดตารางเวลา · เส้น HDP ยึดตาราง AH เท่านั้น):
 {raw_text}
@@ -1057,6 +1059,58 @@ def build_from_api(matches, leagues, time_map, flag_map, odds_map, mkt_map):
     return ah_table, combined
 
 
+# ---------- สถิติจริง "ครึ่งแรก → เต็มเวลา" (สร้างไว้ล่วงหน้าโดย ht_history.py) ----------
+HT_FLIP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ht_flip.json")
+HT_BLOCK = ""   # บล็อกสถิติที่จะยัดเข้า prompt (เติมตอน fetch เพราะต้องรู้ว่าวันนี้มีลีกอะไรบ้าง)
+
+def _p(a, b):
+    return round(a / b * 100) if b else 0
+
+def ht_flip_block(keep, leagues, min_n=25, max_lines=16):
+    """บล็อกสถิติพลิกครึ่งแรก — เอาเฉพาะลีกที่ "มีคู่ในวันนี้" และเบี้ยวจากค่ากลางจริงๆ
+    (ไม่งั้นยัด 900 ลีกเข้า prompt = เปลืองโทเคนเปล่าและ Gemini ไม่ได้ใช้)"""
+    try:
+        with open(HT_FLIP_PATH, encoding="utf-8") as f:
+            db = json.load(f)
+    except Exception as e:
+        print(f"ℹ️ ไม่มีสถิติ HT→FT ({e})")
+        return ""
+    a = db.get("all") or {}
+    if not a.get("lead"):
+        return ""
+    base_keep = _p(a["lw"], a["lead"])      # นำครึ่งแรกแล้วยังชนะจบ (ค่ากลางทุกลีก)
+    todays = {str(v.get("league_id") or "0") for v in keep.values()}
+    rows = []
+    for lid in todays:
+        lg = (db.get("leagues") or {}).get(lid)
+        if not lg or lg.get("n", 0) < min_n or not lg.get("lead"):
+            continue
+        k = _p(lg["lw"], lg["lead"])
+        rows.append((k - base_keep, lg, k))
+    rows.sort(key=lambda x: x[0])          # ลีกที่ "นำแล้วเอาไม่อยู่" มากสุดขึ้นก่อน
+    # เอาสองหัวท้าย: ลีกพลิกบ่อยสุด (ระวัง) + ลีกนำแล้วอยู่ยาวสุด (ตามได้) — ตรงกลางคือค่ากลาง ไม่ต้องบอก
+    lo = [r for r in rows if r[0] <= -6][:max_lines * 2 // 3]
+    hi = [r for r in rows if r[0] >= 6][-(max_lines - len(lo)):] if len(rows) > len(lo) else []
+    pick = lo + hi
+    if not pick:
+        pick = rows[:6]
+    if not pick:
+        return ""
+    L = [f"===สถิติผลจริงย้อนหลัง {len(db.get('dates') or [])} วัน ({a['n']:,} คู่) — ครึ่งแรกอยู่ไหมถึงจบเกม===",
+         f"ค่ากลางทุกลีก: นำครึ่งแรก → ชนะจบ {base_keep}% · โดนตีเสมอ {_p(a['ld'], a['lead'])}% · "
+         f"แพ้พลิก {_p(a['ll'], a['lead'])}% | เสมอครึ่งแรก → จบมีผลแพ้ชนะ {_p(a['drd'], a['dr'])}% | "
+         f"ลูกครึ่งแรก {a['hg']/(a['n'] or 1):.2f} จากทั้งเกม {a['fg']/(a['n'] or 1):.2f}",
+         "วิธีใช้: ลีกที่ 'นำแล้วอยู่' ต่ำกว่าค่ากลาง = อย่าเพิ่งฟันตามฝั่งที่นำอยู่ตอนพักครึ่ง (ลดดาว/เลี่ยง) · "
+         "ลีกที่สูงกว่าค่ากลาง = ตามฝั่งที่นำได้มั่นใจขึ้น · ลูกครึ่งหลังเยอะกว่าปกติ = หนุน 'สูงเต็ม' มากกว่า 'สูงแรก'",
+         "(ลีก | นำ HT แล้วชนะจบ | ตีเสมอ | แพ้พลิก | เสมอ HT→มีผล | ลูก HT→เต็มเกม | จำนวนคู่)"]
+    for dev, lg, k in pick:
+        L.append(f"{lg.get('name', '?')} | {k}% ({dev:+d}) | {_p(lg['ld'], lg['lead'])}% | "
+                 f"{_p(lg['ll'], lg['lead'])}% | {_p(lg['drd'], lg['dr'])}% | "
+                 f"{lg['hg']/lg['n']:.1f}→{lg['fg']/lg['n']:.1f} | {lg['n']}")
+    print(f"🔄 สถิติ HT→FT: ใส่ prompt {len(pick)} ลีก (จาก {len(todays)} ลีกที่มีคู่วันนี้ · คลัง {len(db.get('leagues') or {})} ลีก)")
+    return "\n".join(L)
+
+
 def fetch_via_api(time_map, flag_map, odds_map, mkt_map):
     """ดึง 2 วัน (วันนี้+พรุ่งนี้ตามเวลาไทย) แล้วคัดเฉพาะคู่ที่อยู่ใน 'วันบอล' รอบนี้
     ต้องดึง 2 วันเพราะฟีดของ Forebet 1 วัน = ยุโรป 17:00 วันก่อน → 19:00 วันนั้น
@@ -1104,6 +1158,8 @@ def fetch_via_api(time_map, flag_map, odds_map, mkt_map):
     print(f"🗓️ วันบอล {start:%d/%m %H:%M} → {end:%d/%m %H:%M} (ไทย) · เข้าเกณฑ์ {len(keep)}/{len(matches)} คู่")
     if not keep:
         return "", "", sess
+    global HT_BLOCK
+    HT_BLOCK = ht_flip_block(keep, leagues)
     ah_table, combined = build_from_api(keep, leagues, time_map, flag_map, odds_map, mkt_map)
     return ah_table, combined, sess
 
@@ -1181,7 +1237,7 @@ def main():
     history = fetch_history_block()  # ประวัติรอบก่อนๆ วันนี้ → วัดความนิ่ง (บอกซ้ำ = มั่นใจ)
     print(f"🤖 แหล่งข้อมูล {ok} ชุด → ให้ Gemini คัดคู่เด่น 1-{MAX_MATCHES}...")
     print(f"📦 ข้อมูลรวมหลัง compact: {len(combined):,} ตัวอักษร (~{len(combined)//4:,} tokens)")
-    result = analyze_with_gemini(combined[:1200000], ah_table, time_table, history)  # cap ~300K tokens รับ 20+ ตลาด (Gemini flash context 1M)
+    result = analyze_with_gemini(combined[:1200000], ah_table, time_table, history, HT_BLOCK)  # cap ~300K tokens รับ 20+ ตลาด (Gemini flash context 1M)
 
     # AI ไม่พร้อม/โควตาเต็ม → ข้ามรอบนี้เงียบๆ (ไม่สแปม error เข้า Telegram ทุก 2 ชม.)
     if not result or not result.strip():
