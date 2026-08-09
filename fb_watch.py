@@ -425,7 +425,8 @@ def main():
     print(f"⏱️ เตือนเฉพาะนาที {MIN_FROM}-{MIN_TO} (ช่วงที่ตัวเลขวัดมาตรงจริง)", flush=True)
 
     seen = load_seen()
-    route = fbapi.fb_session()
+    # โหมดอ่านแคชไม่แตะ Forebet เลย — ไม่ต้องเปิดเส้นทาง (ไม่งั้นโดน 403 ทุก 5 นาที วันละ 288 ครั้ง)
+    route = None if CACHE_MODE == "read" else fbapi.fb_session()
     deadline = time.time() + hours * 3600
     total = 0
     while True:
