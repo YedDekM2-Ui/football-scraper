@@ -471,6 +471,10 @@ def sweep(route, trust, base, gall, seen, dry):
             "tag": m.get("short_tag"), "cc": m.get("code"), "lg": m.get("league_id"),
             "h": m.get("HOST_NAME"), "a": m.get("GUEST_NAME"), "min": minute,
             "HH": _i(m.get("Host_SC_HT")), "GH": _i(m.get("Guest_SC_HT")),
+            # ใบแดงต้องมากับ meta ด้วย ไม่ใช่จดแค่ไฟล์ที่เครื่องบ้าน —
+            # ตัวจริงรันบน GitHub Actions ไฟล์นั้นหายไปกับ runner ทุกรอบ
+            # ชีตคือที่เดียวที่อยู่ถาวร ถ้าไม่ส่งไป อีก 2-3 เดือนจะไม่มีอะไรให้วัด
+            "rh": m.get("_rh"), "ra": m.get("_ra"),   # None = ไม่รู้ (ไม่ใช่ 0)
             "hit": round(hit, 1), "n": n, "base": round(b, 1),
             "p1": _f(m.get("Pred_1")), "p2": _f(m.get("Pred_2")),
         }
