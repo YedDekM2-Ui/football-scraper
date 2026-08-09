@@ -7,9 +7,11 @@ name: fb-watch
 # ไม่มีแคช / แคชไม่ใช่ของวันนี้ = เงียบ ไม่เตือน (fail-closed)
 #   เตือนด้วยรายการเมื่อวานอันตรายกว่าไม่เตือน
 #
-# ⚠️ cron ของ GitHub มาช้าได้ 5-15 นาที และหายเป็นรอบได้ · หน้าต่างเตือนกว้าง 13 นาที (นาที 45-58)
-#   → ตั้งถี่สุดที่ GitHub ยอม (5 นาที) แล้วรอบหนึ่งจบใน ~1 นาที
-#   → ยังไม่เคยวัดว่ามาตรงจริงแค่ไหน ต้องดูของจริงหนึ่งคืนก่อน
+# ⚠️ วัดจริง 9 ส.ค. 69: cron ตั้งไว้ทุก 5 นาที แต่ตื่นแค่ 2 ครั้ง ห่างกัน 48 นาที
+#   หน้าต่างเตือนกว้างแค่ 13 นาที (นาที 45-58) → หลับ 48 นาทีทีเดียวข้ามคู่ทั้งดุ้น
+#   → คนปลุกตัวจริงตอนนี้คือ PIKTAX (trigger f5Poke ทุก 5 นาที ยิง workflow_dispatch)
+#     วัดแล้ว dispatch ไม่โดนหน่วงเลย created_at = run_started_at เป๊ะทุกรอบ
+#   → cron ข้างล่างปล่อยไว้เป็นตัวสำรองเผื่อ GAS เงียบ
 
 on:
   schedule:
@@ -18,6 +20,10 @@ on:
     inputs:
       dry:
         description: 'ไม่ส่งจริง แค่พิมพ์ผล'
+        type: boolean
+        default: false
+      probe:
+        description: 'ทดสอบทางส่ง PIKTAX ก่อนเฝ้า (กดมือเท่านั้น)'
         type: boolean
         default: false
 
@@ -56,10 +62,11 @@ jobs:
           key: fbseen-
           restore-keys: fbseen-
 
-      # เช็คว่ากุญแจเดินทางถึง runner จริงและ PIKTAX รับ — กดมือเท่านั้น
-      # ไม่ให้วิ่งตอน cron เพราะรอบละ 5 นาที = ยิง GAS เปล่าๆ วันละ 288 ครั้ง
+      # เช็คว่ากุญแจเดินทางถึง runner จริงและ PIKTAX รับ — กดมือเท่านั้น (ติ๊ก probe)
+      # ห้ามผูกกับ workflow_dispatch เฉยๆ เพราะตอนนี้ GAS ปลุกด้วย dispatch ทุก 5 นาที
+      # = ยิง GAS เปล่าๆ วันละ 288 ครั้ง (กินโควตา UrlFetch ของ PIKTAX ฟรีๆ)
       - name: ทดสอบทางส่ง PIKTAX
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.probe
         env:
           PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
           PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
