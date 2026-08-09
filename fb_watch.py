@@ -67,13 +67,33 @@ KEY_FILE = r"D:\Projects\.gas-creds\piktax-admin-key.txt"
 # ตัวเลขที่วัดไว้ทั้งหมดคือ "จากตอนพักครึ่ง → จบเกม" → เตือนช้ากว่านี้ = เลขที่โชว์จะเกินจริง
 MIN_FROM, MIN_TO = 45, 58
 
+# ── เกณฑ์ % ของ Forebet · ต้องตรงกับ fb_calib.py เป๊ะ ไม่งั้นเลขบนใบเตือนโกหก ────
+FAV_TH = 70      # ตัวเต็ง (lv_nolose / bh_g1)
+GG_TH = 65       # ทายยิงกันทั้งคู่ (bts1_g1)
+OVER_TH = 65     # ทายสูง (over_g1)
+
 # ── กฎ: ชื่อตลาดต้องตรงกับที่ fb_calib.py เขียนลง fb_trust.json ───────────────
-#   need_lift = ลีกต้องดีกว่าเส้นฐานทุกลีกกี่จุด ถึงจะยอมเตือน
+# ⚠️ ทุกเกณฑ์วัดเป็น "ลูกที่ยังไม่เกิด" — ใบเตือนออกตอนสกอร์ยังเท่าพักครึ่งเป๊ะ
+#    เกณฑ์แบบ "จบ ≥2 ลูก" ตอนพัก 2-0 = ชนะฟรี (ของเดิมพลาดตรงนี้ทั้งชุด)
+# เส้นฐานเปล่า 131,011 คู่: ครึ่งหลังมีลูก ≥1 = 78.4% ← ทุกตลาดหน้าลูกต้องชนะเลขนี้
+#    ที่ฆ่าทิ้ง: ht00_2h_goal 74.6% (ต่ำกว่าเส้นฐาน) · debt_over 42.6%
+#               debt_btts 52.9% · debt_fav 47.8%
+#
+# gate = "league" → กรองรายลีก (need_lift = ต้องดีกว่าเส้นฐานทุกลีกกี่จุด)
+# gate = "global" → ไม่กรองลีก ใช้เลขรวมทุกลีก
+#    ทำไม: 2 ตัวนี้ตัวอย่างรายลีกบางเกิน (lv_nolose 2 ลีกผ่าน · bh_g1 0 ลีก)
+#    และรวมระดับประเทศก็ไม่ช่วย — ความต่างระหว่างประเทศ 86.1–92.0% ขณะที่
+#    ค่าคลาดเคลื่อนปกติ ±3.9 = อยู่ในช่วงมั่วล้วนๆ แปลว่าเป็นเรื่องโครงสร้างเกม
+#    ไม่ใช่เรื่องลีก → กรองลีกไปก็เป็นความแม่นยำปลอม ใช้เกณฑ์ % แทนเป็นปุ่มลดใบ
 RULES = {
-    "ht00_2h_goal": {"label": "ครึ่งแรก 0-0 → ครึ่งหลังมีประตู", "need_lift": 5.0, "minn": 60},
-    "debt_fav":     {"label": "ตัวเต็งยังไม่นำ → จบพลิกชนะ",     "need_lift": 5.0, "minn": 40},
-    "debt_over":    {"label": "สูงค้าง → จบ ≥3 ประตู",          "need_lift": 5.0, "minn": 40},
-    "debt_btts":    {"label": "ยิงฝั่งเดียว → BTTS", "need_lift": 8.0, "minn": 40},
+    "lv_nolose": {"label": "พักครึ่งเสมอ + ตัวเต็ง → ฝั่งนั้นไม่แพ้",
+                  "gate": "global"},                                  # 89.8% · n=1,113
+    "bts1_g1":   {"label": "พักยิงข้างเดียว + ทายยิงคู่ → ครึ่งหลังมีอีก ≥1 ลูก",
+                  "gate": "league", "need_lift": 5.0, "minn": 40},    # ทุกลีก 84.0% · 30 ลีกผ่าน
+    "bh_g1":     {"label": "ตัวเต็งตามอยู่ → ครึ่งหลังมีอีก ≥1 ลูก",
+                  "gate": "global"},                                  # 86.1% · n=345
+    "over_g1":   {"label": "ทายสูงแต่พักครึ่งได้ ≤1 → ครึ่งหลังมีอีก ≥1 ลูก",
+                  "gate": "league", "need_lift": 5.0, "minn": 40},    # ทุกลีก 82.7% · 25 ลีกผ่าน
 }
 
 
@@ -93,25 +113,39 @@ def _i(v):
 
 # ── เส้นฐาน + ตัวกรองรายลีก ───────────────────────────────────────────────────
 def load_trust():
-    """คืน (trust, baseline) · baseline = เส้นฐานทุกลีกของแต่ละตลาด (ถ่วงน้ำหนักด้วย n)"""
+    """คืน (trust, baseline, gall)
+
+    baseline = เส้นฐานทุกลีกของแต่ละตลาด (ถ่วงน้ำหนักด้วย n · เฉพาะลีกที่ผ่าน minn ของ calib)
+    gall     = เลขรวมทุกลีกจริงๆ ทุกคู่ (คีย์ `_all`) ใช้กับตลาด gate=global
+    ⚠️ คีย์ที่ขึ้นต้นด้วย _ ไม่ใช่ลีก ต้องข้ามตอนคิดเส้นฐาน ไม่งั้นนับซ้ำทั้งกอง
+    """
     trust = json.load(open(TRUST, encoding="utf-8"))
+    gall = (trust.get("_all") or {}).get("mkt") or {}
     tot = {}
     for lg, d in trust.items():
+        if lg.startswith("_"):
+            continue
         for mkt, v in (d.get("mkt") or {}).items():
             a = tot.setdefault(mkt, [0, 0.0])
             a[0] += v["n"]
             a[1] += v["n"] * v["hit"] / 100.0
     base = {k: (v[1] / v[0] * 100 if v[0] else 0.0) for k, v in tot.items()}
-    return trust, base
+    return trust, base, gall
 
 
-def league_ok(trust, base, lg, mkt):
-    """ลีกนี้ผ่านเกณฑ์ตลาดนี้ไหม · คืน (ผ่าน, hit, n, เส้นฐาน)
+def league_ok(trust, base, gall, lg, mkt):
+    """ตลาดนี้ผ่านด่านไหม · คืน (ผ่าน, hit, n, เส้นฐาน)
 
     แยกรายตลาดเสมอ — ผู้ใช้ย้ำเอง: "ยูฟ่าหญิง ยิงเยอะจริง แต่ 1X2 แพ้ราบ"
     = ลีกเดียวกันเก่งคนละเรื่อง ให้คะแนนรวมทั้งลีกไม่ได้
+    ตลาด gate=global ไม่กรองลีก (เหตุผลอยู่ที่ RULES) แต่ยังต้องมีเลขที่วัดมาจริง
     """
     r = RULES[mkt]
+    if r["gate"] == "global":
+        d = gall.get(mkt)
+        if not d:
+            return False, None, 0, 0.0      # ไม่มีเลขวัด = ไม่เตือน (fail-closed)
+        return True, d["hit"], d["n"], d["hit"]
     b = base.get(mkt, 0.0)
     d = ((trust.get(str(lg)) or {}).get("mkt") or {}).get(mkt)
     if not d or d["n"] < r["minn"]:
@@ -220,29 +254,37 @@ def check_rules(m):
 
     p1, p2 = _f(m.get("Pred_1")), _f(m.get("Pred_2"))
     pro, pgg = _f(m.get("pr_over")), _f(m.get("Pred_gg"))
-    gavg = _f(m.get("goalsavg"))
+    htot = HH + GH
     out = []
 
-    if HH + GH == 0:
-        why = "พักครึ่ง 0-0"
-        if gavg is not None:
-            why += f" · Forebet ทายประตูรวม {gavg}"
-        out.append(("ht00_2h_goal", "ครึ่งหลังอาจจะมีประตู", why))
+    # 1) พักครึ่งเสมอ + Forebet ให้ฝั่งนั้น ≥70 → ฝั่งนั้นไม่แพ้
+    if None not in (p1, p2) and HH == GH:
+        if p1 >= FAV_TH:
+            out.append(("lv_nolose", "บ้านไม่แพ้",
+                        f"ทายเจ้าบ้านชนะ {p1:.0f}% · พักครึ่งยังเสมอ {HH}-{GH}"))
+        elif p2 >= FAV_TH:
+            out.append(("lv_nolose", "เยือนไม่แพ้",
+                        f"ทายทีมเยือนชนะ {p2:.0f}% · พักครึ่งยังเสมอ {HH}-{GH}"))
 
-    if pro is not None and pro >= 65 and HH + GH <= 1:
-        out.append(("debt_over", "มีสกอร์อย่างน้อย1", f"ทายสูง {pro:.0f}% · พักครึ่งเพิ่ง {HH+GH} ประตู"))
+    # 2) พักครึ่งยิงข้างเดียว + ทายยิงกันทั้งคู่ ≥65 → ครึ่งหลังมีอีก ≥1
+    if pgg is not None and pgg >= GG_TH and (HH > 0) != (GH > 0):
+        out.append(("bts1_g1", "ครึ่งหลังมีอีกลูก",
+                    f"ทายยิงกันทั้งคู่ {pgg:.0f}% · พักครึ่งยิงฝั่งเดียว {HH}-{GH}"))
 
-    if pgg is not None and pgg >= 65 and (HH > 0) != (GH > 0):
-        out.append(("debt_btts", "BTTS,สูง,จบ2+", f"ทายยิงกันทั้งคู่ {pgg:.0f}% · พักครึ่งยิงฝั่งเดียว {HH}-{GH}"))
+    # 3) ฝั่งที่ตามอยู่คือตัวเต็ง ≥70 → ครึ่งหลังมีอีก ≥1
+    #    ⚠️ เกณฑ์คือ "มีอีกลูก" ไม่ใช่ "พลิกชนะ" — พลิกชนะจริงแค่ 24.9% (ของเดิมโม้ตรงนี้)
+    if None not in (p1, p2) and HH != GH:
+        if p1 >= FAV_TH and HH < GH:
+            out.append(("bh_g1", "ครึ่งหลังมีอีกลูก",
+                        f"ทายเจ้าบ้านชนะ {p1:.0f}% แต่พักครึ่งตามอยู่ {HH}-{GH}"))
+        elif p2 >= FAV_TH and GH < HH:
+            out.append(("bh_g1", "ครึ่งหลังมีอีกลูก",
+                        f"ทายทีมเยือนชนะ {p2:.0f}% แต่พักครึ่งตามอยู่ {HH}-{GH}"))
 
-    if p1 is not None and p2 is not None:
-        # ตามหลังอยู่ = ยังต้องไล่ · เสมออยู่ = แค่รักษาไว้ → คนละหัว
-        if p1 >= 60 and HH <= GH:
-            head = "เสมอบ้าน,ลุ้นแซง,กดสูง" if HH < GH else "บ้านไม่แพ้"
-            out.append(("debt_fav", head, f"ทายเจ้าบ้านชนะ {p1:.0f}% · พักครึ่ง {HH}-{GH}"))
-        elif p2 >= 60 and GH <= HH:
-            head = "เสมอเยือน,ลุ้นแซง,กดสูง" if GH < HH else "เยือนไม่แพ้"
-            out.append(("debt_fav", head, f"ทายทีมเยือนชนะ {p2:.0f}% · พักครึ่ง {HH}-{GH}"))
+    # 4) ทายสูง ≥65 แต่พักครึ่งได้ ≤1 ลูก → ครึ่งหลังมีอีก ≥1
+    if pro is not None and pro >= OVER_TH and htot <= 1:
+        out.append(("over_g1", "ครึ่งหลังมีอีกลูก",
+                    f"ทายสูง {pro:.0f}% · พักครึ่งเพิ่ง {htot} ประตู"))
     return out
 
 
@@ -257,13 +299,16 @@ def _ko_th(m):
 def fmt(m, mkt, head, why, hit, n, base, minute):
     r = RULES[mkt]
     lg = ((m.get("short_tag") or "?"), str(m.get("code") or "??").upper())
+    # ตลาด gate=global ไม่มีเลขรายลีก → โชว์เลขรวมตรงๆ ห้ามแกล้งทำเป็นเลขรายลีก
+    stat = (f"วัดรวมทุกลีก {hit:.1f}% ({n:,} คู่)" if r["gate"] == "global"
+            else f"ลีกนี้เข้า {hit:.1f}% (วัด {n} คู่) · ทุกลีก {base:.1f}%")
     return (
         f"⚽ {head} · {minute}\"\n"
         f"{_ko_th(m)}{m.get('HOST_NAME')} {_i(m.get('Host_SC')) or 0}-"
         f"{_i(m.get('Guest_SC')) or 0} {m.get('GUEST_NAME')}\n"
         f"🏆 [{lg[1]}] {lg[0]}\n"
         f"🔎 {why}\n"
-        f"📊 {r['label']} — ลีกนี้เข้า {hit:.1f}% (วัด {n} คู่) · ทุกลีก {base:.1f}%\n"
+        f"📊 {r['label']} — {stat}\n"
         f"⚠️ เป็นการคาดการณ์ \"พักครึ่ง → จบเกม\" ไม่ใช่ของนาทีนี้"
     )
 
@@ -378,7 +423,7 @@ def log_alert(mid, m, mkt, head, minute, hit, n, b, dry):
         }, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def sweep(route, trust, base, seen, dry):
+def sweep(route, trust, base, gall, seen, dry):
     matches, src = live_now(route)
     stamp = datetime.now().strftime("%H:%M")
     if not matches:
@@ -392,25 +437,31 @@ def sweep(route, trust, base, seen, dry):
         minute = minute_of[mid]
         if not (MIN_FROM <= minute <= MIN_TO):
             continue
+        key = f"{date.today().isoformat()}:{mid}"
+        if key in seen:
+            continue                  # 1 คู่ = 1 ใบต่อวัน · ตัวนี้เป็น "ตัวชี้จุด" ไม่ใช่ตัวสาดใบ
+        # หลายกฎยิงคู่เดียวกันได้ (เช่น ยิงข้างเดียว 1-0 เข้าทั้ง bts1_g1 และ over_g1)
+        # → ส่งใบเดียว เอาอันที่วัดได้แม่นสุด
+        cand = []
         for mkt, head, why in check_rules(m):
-            key = f"{date.today().isoformat()}:{mid}:{mkt}"
-            if key in seen:
-                continue
-            ok, hit, n, b = league_ok(trust, base, m.get("league_id"), mkt)
-            if not ok:
-                continue
-            meta = {
-                "id": mid, "mkt": mkt, "head": head,
-                "tag": m.get("short_tag"), "cc": m.get("code"), "lg": m.get("league_id"),
-                "h": m.get("HOST_NAME"), "a": m.get("GUEST_NAME"), "min": minute,
-                "HH": _i(m.get("Host_SC_HT")), "GH": _i(m.get("Guest_SC_HT")),
-                "hit": round(hit, 1), "n": n, "base": round(b, 1),
-                "p1": _f(m.get("Pred_1")), "p2": _f(m.get("Pred_2")),
-            }
-            if send(fmt(m, mkt, head, why, hit, n, b, minute), dry, meta):
-                log_alert(mid, m, mkt, head, minute, hit, n, b, dry)
-                seen[key] = stamp
-                sent += 1
+            ok, hit, n, b = league_ok(trust, base, gall, m.get("league_id"), mkt)
+            if ok:
+                cand.append((hit, mkt, head, why, n, b))
+        if not cand:
+            continue
+        hit, mkt, head, why, n, b = max(cand)
+        meta = {
+            "id": mid, "mkt": mkt, "head": head,
+            "tag": m.get("short_tag"), "cc": m.get("code"), "lg": m.get("league_id"),
+            "h": m.get("HOST_NAME"), "a": m.get("GUEST_NAME"), "min": minute,
+            "HH": _i(m.get("Host_SC_HT")), "GH": _i(m.get("Guest_SC_HT")),
+            "hit": round(hit, 1), "n": n, "base": round(b, 1),
+            "p1": _f(m.get("Pred_1")), "p2": _f(m.get("Pred_2")),
+        }
+        if send(fmt(m, mkt, head, why, hit, n, b, minute), dry, meta):
+            log_alert(mid, m, mkt, head, minute, hit, n, b, dry)
+            seen[key] = stamp
+            sent += 1
     inplay = sum(1 for v in minute_of.values() if v is not None)
     window = sum(1 for v in minute_of.values() if v is not None and MIN_FROM <= v <= MIN_TO)
     print(f"[{stamp}] บอลสด {inplay} คู่ (อยู่ในช่วงเตือน {window}) · เตือน {sent} · {src}", flush=True)
@@ -428,9 +479,16 @@ def main():
 
     if not os.path.exists(TRUST):
         sys.exit("❌ ไม่มี fb_trust.json — รัน `python fb_calib.py 40` ก่อน")
-    trust, base = load_trust()
-    print(f"🧠 ตัวกรองรายลีก {len(trust)} ลีก · เส้นฐาน " +
-          " · ".join(f"{k} {base[k]:.1f}%" for k in RULES if k in base), flush=True)
+    trust, base, gall = load_trust()
+    bits = []
+    for k, r in RULES.items():
+        if r["gate"] == "global":
+            d = gall.get(k)
+            bits.append(f"{k} รวมทุกลีก {d['hit']:.1f}%" if d else f"{k} ❌ไม่มีเลขวัด")
+        elif k in base:
+            bits.append(f"{k} ฐาน {base[k]:.1f}%+{r['need_lift']:g}")
+    print(f"🧠 ตัวกรองรายลีก {sum(1 for x in trust if not x.startswith('_'))} ลีก · "
+          + " · ".join(bits), flush=True)
     print(f"⏱️ เตือนเฉพาะนาที {MIN_FROM}-{MIN_TO} (ช่วงที่ตัวเลขวัดมาตรงจริง)", flush=True)
 
     seen = load_seen()
@@ -440,7 +498,7 @@ def main():
     total = 0
     while True:
         try:
-            total += sweep(route, trust, base, seen, dry)
+            total += sweep(route, trust, base, gall, seen, dry)
         except Exception as e:
             print(f"⚠️ รอบนี้พัง: {e}", flush=True)
         seen = save_seen(seen)
