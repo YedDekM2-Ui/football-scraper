@@ -246,16 +246,25 @@ def check_rules(m):
     return out
 
 
+def _ko_th(m):
+    """เวลาเตะเป็นเวลาไทย 'HH:MM ' — ไม่รู้เวลา = คืนค่าว่าง ไม่เดา"""
+    ko = m.get("_ko")
+    if not isinstance(ko, datetime):
+        return ""
+    return (ko + timedelta(hours=7)).strftime("%H:%M ")
+
+
 def fmt(m, mkt, head, why, hit, n, base, minute):
     r = RULES[mkt]
     lg = ((m.get("short_tag") or "?"), str(m.get("code") or "??").upper())
     return (
-        f"⚽ {head} · นาที {minute}\n"
-        f"{m.get('HOST_NAME')} {_i(m.get('Host_SC')) or 0}-{_i(m.get('Guest_SC')) or 0} {m.get('GUEST_NAME')}\n"
+        f"⚽ {head} · {minute}\"\n"
+        f"{_ko_th(m)}{m.get('HOST_NAME')} {_i(m.get('Host_SC')) or 0}-"
+        f"{_i(m.get('Guest_SC')) or 0} {m.get('GUEST_NAME')}\n"
         f"🏆 [{lg[1]}] {lg[0]}\n"
         f"🔎 {why}\n"
         f"📊 {r['label']} — ลีกนี้เข้า {hit:.1f}% (วัด {n} คู่) · ทุกลีก {base:.1f}%\n"
-        f"⚠️ เป็นการคาดการณ์ \"ตอนพักครึ่ง → จบเกม\" ไม่ใช่ของนาทีนี้"
+        f"⚠️ เป็นการคาดการณ์ \"พักครึ่ง → จบเกม\" ไม่ใช่ของนาทีนี้"
     )
 
 
