@@ -177,7 +177,11 @@ def goaloo_fetch(timeout=40, now=None):
     ถอดฟีดเอง วัดทีละช่อง 9 ส.ค. 69 (738 คู่ · 250 ลีก):
       A[i] = [0 matchId, 1 ช่องที่เท่าไหร่ใน B, 2 homeId, 3 guestId, 4 ชื่อเหย้า, 5 ชื่อเยือน,
               6 เวลาเตะ, 7 เวลาเริ่มครึ่งที่กำลังเตะ, 8 สถานะ, 9 สกอร์เหย้า, 10 สกอร์เยือน,
-              11 ครึ่งแรกเหย้า, 12 ครึ่งแรกเยือน, ...]
+              11 ครึ่งแรกเหย้า, 12 ครึ่งแรกเยือน, 13 ใบแดงเหย้า, 14 ใบแดงเยือน,
+              15 ใบเหลืองเหย้า, 16 ใบเหลืองเยือน, ...]
+      ใบแดง 13/14 พิสูจน์แล้ว 9 ส.ค. 69: IFK Trelleborg 1-0 Vaxjo Norra ([13]=0 [14]=1)
+      ตรงกับที่เจ้าของเห็นในสนาม · กระจายทั้งฟีด 10 และ 13 จาก 228 คู่ (~5%/ฝั่ง) = อัตราจริง
+      **ที่อื่นไม่มีให้เลย** — Forebet 75 ฟิลด์ไม่มี · LiveScore ไล่คีย์ครบแล้วก็ไม่มี
       B[ช่อง] = [sclassId, ชื่อย่อ, ชื่อเต็ม, สี, ..., 10 countryId]   C[n] = [countryId, ชื่อประเทศ, 0]
       สถานะ: 0 ยังไม่เตะ · 1 ครึ่งแรก · 2 พักครึ่ง · 3 ครึ่งหลัง · -1 จบ (อื่นๆ ทิ้ง)
 
@@ -228,6 +232,8 @@ def goaloo_fetch(timeout=40, now=None):
             "HS": _i(r[9]) or 0, "GS": _i(r[10]) or 0,
             "HH": _i(r[11]) if st in (2, 3, -1) else None,
             "GH": _i(r[12]) if st in (2, 3, -1) else None,
+            "rh": (_i(r[13]) or 0) if len(r) > 13 else None,
+            "ra": (_i(r[14]) or 0) if len(r) > 14 else None,
             "nh": norm(r[4]), "na": norm(r[5]), "src": "goaloo",
         })
     return out
@@ -275,6 +281,7 @@ def score_pool(center=None, goaloo=None):
     now = dt.datetime.utcnow()
     add = swap = 0
     drop = set()
+    cards = collections.defaultdict(set)   # id(แถว LiveScore) -> {(ใบแดงเหย้า, ใบแดงเยือน)}
     for g in gl:
         if parse_minute(g["eps"]) is None:
             continue                       # ไม่ได้กำลังเตะ = ไม่มีประโยชน์
@@ -286,7 +293,16 @@ def score_pool(center=None, goaloo=None):
         dup = [e for e in cand
                if min(_sim(g["nh"], e["nh"]), _sim(g["na"], e["na"])) >= GL_DEDUP]
         if any(parse_minute(e["eps"]) is not None for e in dup):
-            continue                       # LiveScore ตามสกอร์อยู่จริง = ยกให้เขา
+            # LiveScore ตามสกอร์อยู่จริง = ยกสกอร์ให้เขา
+            # แต่ **ใบแดงมีที่ goaloo เจ้าเดียว** → หยิบติดมือไปแปะไว้ ไม่งั้นทิ้งทั้งดุ้น
+            # 🔒 แปะด้วยด่านเข้มกว่าดีดูป: ต้อง NAME_MIN (0.80) และเจอแถวเดียวเท่านั้น
+            #    เพราะนี่คือ "ข้อเท็จจริงที่จะไปโผล่บนใบเตือน" — แปะผิดคู่แย่กว่าไม่แปะ
+            if g.get("rh") is not None:
+                tight = [e for e in dup
+                         if min(_sim(g["nh"], e["nh"]), _sim(g["na"], e["na"])) >= NAME_MIN]
+                if len(tight) == 1:
+                    cards[id(tight[0])].add((g["rh"], g["ra"]))
+            continue
         for e in dup:
             drop.add(id(e))
             swap += 1
@@ -294,7 +310,16 @@ def score_pool(center=None, goaloo=None):
         add += 1
     if drop:
         pool = [e for e in pool if id(e) not in drop]
+
+    # แปะเฉพาะแถวที่ goaloo พูดตรงกันเสียงเดียว — 2 แถวเถียงกัน = ไม่รู้ว่าคู่ไหน ทิ้ง
+    red = 0
+    for e in pool:
+        v = cards.get(id(e))
+        if v and len(v) == 1:
+            e["rh"], e["ra"] = next(iter(v))
+            red += 1
     print(f"➕ goaloo เติม {add} คู่ (ในนั้นแทนแถวที่ LiveScore ค้าง NS อยู่ {swap}) "
+          f"· แปะใบแดงให้แถว LiveScore {red} คู่ "
           f"· นาฬิกาต่าง {med:+.0f} น. จาก {len(d)} คู่", flush=True)
     return pool
 
@@ -434,6 +459,8 @@ def apply_live(m, g):
     m["_ls_lg"] = g["lg"]
     m["_src"] = g.get("src") or "livescore"
     m["_ko"] = g.get("ko")          # เวลาเตะจริง (UTC) — ใบเตือนเอาไป +7 เป็นเวลาไทย
+    m["_rh"] = g.get("rh")          # ใบแดงเหย้า/เยือน — มีที่ goaloo เจ้าเดียว
+    m["_ra"] = g.get("ra")          # None = ไม่รู้ (ไม่ใช่ 0) → การ์ดต้องไม่พูดถึง
     return m
 
 
