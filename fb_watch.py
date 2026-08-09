@@ -439,6 +439,58 @@ def log_alert(mid, m, mkt, head, minute, hit, n, b, dry):
         }, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+def stamp_goals(matches, minute_of, seen, dry):
+    """จด "นาทีที่เห็นลูกแรกหลังพักครึ่ง" ของใบที่เตือนไปแล้ววันนี้ ลงชีตผ่าน f5stamp
+
+    ตอบคำถามเดียวที่เจ้าของทักมา (9 ส.ค. 69): "ส่วนใหญ่มันก็ยิงก่อน"
+      ถ้าลูกมาไวเกือบทุกใบ = ช่วงที่ยังเข้าทันแทบไม่มีจริง → ใบเตือนมีค่าน้อยกว่าที่ % บอก
+      วัด 2-3 อาทิตย์ค่อยสรุป ห้ามเดาก่อนมีเลข
+
+    ต้องจบที่ชีต ไม่ใช่ไฟล์ที่เครื่อง — ตัวจริงรันบน GitHub Actions ไฟล์หายไปกับ runner ทุกรอบ
+    ⏱️ รอบละ 5 นาที → คลาดได้ถึง +5 ("นาทีที่เห็น" ไม่ใช่ "นาทีที่ยิง") พอหาค่ากลาง ไม่พออ้างรายใบ
+    """
+    today = date.today().isoformat()
+    todo = []
+    for mid, m in matches.items():
+        key = f"{today}:{mid}"
+        mark = str(seen.get(key) or "")
+        if not mark or "|G" in mark:
+            continue                      # ไม่ใช่ใบที่เตือนวันนี้ / จดไปแล้ว
+        HS, GS = _i(m.get("Host_SC")), _i(m.get("Guest_SC"))
+        HH, GH = _i(m.get("Host_SC_HT")), _i(m.get("Guest_SC_HT"))
+        mn = minute_of.get(mid)
+        if None in (HS, GS, HH, GH) or mn is None:
+            continue
+        if HS + GS <= HH + GH:
+            continue                      # ยังไม่มีลูกใหม่ (ใบออกตอนสกอร์เท่าพักครึ่งเป๊ะ)
+        todo.append((key, mid, mn))
+    if not todo:
+        return 0
+
+    if dry:
+        print("  (dry) นาทีที่เห็นลูก: "
+              + ", ".join(f"{i}@{n}'" for _, i, n in todo), flush=True)
+        return len(todo)
+
+    url, key = _piktax_url(), _admin_key()
+    if not url or not key:
+        return 0
+    data = json.dumps([{"id": i, "min": n} for _, i, n in todo],
+                      ensure_ascii=False, separators=(",", ":"))
+    try:
+        r = requests.get(url, params={"admin": key, "action": "f5stamp", "data": data}, timeout=90)
+        if r.status_code == 200 and "f5stamp: จด" in r.text:
+            # จดสำเร็จค่อยกาไว้ — ไม่สำเร็จปล่อยให้รอบหน้าลองใหม่ (ช้าไป 5 นาทีดีกว่าหายเลย)
+            for k, _, n in todo:
+                seen[k] = f"{seen[k]}|G{n}"
+            print(f"⚽ จดนาทีลูกมา {len(todo)} ใบ · {r.text.strip()[:80]}", flush=True)
+            return len(todo)
+        print(f"⚠️ f5stamp ไม่ผ่าน: HTTP {r.status_code} · {r.text[:90]!r}", flush=True)
+    except Exception as e:
+        print(f"⚠️ f5stamp พัง: {e}", flush=True)
+    return 0
+
+
 def sweep(route, trust, base, gall, seen, dry):
     matches, src = live_now(route)
     stamp = datetime.now().strftime("%H:%M")
@@ -482,6 +534,9 @@ def sweep(route, trust, base, gall, seen, dry):
             log_alert(mid, m, mkt, head, minute, hit, n, b, dry)
             seen[key] = stamp
             sent += 1
+    # ตามใบที่เตือนไปแล้วว่าลูกมาเมื่อไหร่ — นอกหน้าต่างนาที 45-58 ด้วย (ลูกมานาที 80 ก็ต้องจด)
+    stamp_goals(matches, minute_of, seen, dry)
+
     inplay = sum(1 for v in minute_of.values() if v is not None)
     window = sum(1 for v in minute_of.values() if v is not None and MIN_FROM <= v <= MIN_TO)
     print(f"[{stamp}] บอลสด {inplay} คู่ (อยู่ในช่วงเตือน {window}) · เตือน {sent} · {src}", flush=True)
