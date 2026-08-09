@@ -1,0 +1,27 @@
+name: LS Probe (LiveScore CDN)
+
+# เทสต์เดี่ยว — ไม่แตะ Gemini ไม่กินโควตา ไม่ส่ง Telegram
+# ดูผลได้ที่ Summary ของ run (ตัวเลขทั้งหมดอยู่ในนั้น)
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install requests
+
+      - name: ยิง LiveScore
+        id: run
+        continue-on-error: true
+        run: python ls_probe.py
+
+      - name: ใส่ผลลง Summary
+        if: always()
+        run: cat ls_probe_out.md >> "$GITHUB_STEP_SUMMARY" || echo "ไม่มี ls_probe_out.md" >> "$GITHUB_STEP_SUMMARY"
