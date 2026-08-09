@@ -1,0 +1,54 @@
+name: fb-cache
+
+# ดึงรายการคู่ Forebet ของวัน เก็บไว้ให้งาน fb-watch ใช้
+#
+# ทำไมต้องแยกงาน: IP ของ GitHub Actions โดน Cloudflare ของ Forebet เด้ง 403 (วัดแล้ว)
+#   → งานนี้อ้อมผ่าน PIKTAX ?ff= (GAS ใช้ IP ของ Google → Jina → Forebet) ซึ่งช้าแต่ทะลุได้
+#   → ส่วนงานเฝ้าทุก 5 นาที ไม่ต้องแตะ Forebet เลย อ่านแคชอย่างเดียว
+#
+# วันละ 4 รอบ ไม่ใช่รอบเดียว เพราะ cron ของ GitHub หายเป็นรอบได้ (เคยตายทั้ง workflow มาแล้ว)
+#   → รอบไหนหาย รอบถัดไปซ่อมให้เอง · และรอบ 01:12 UTC คือรอบที่รับวันใหม่หลังเที่ยงคืน UTC
+# เวลาในเครื่อง runner เป็น UTC — ทั้ง 2 งานใช้นาฬิกาเดียวกัน วันที่จึงตรงกันเสมอ
+
+on:
+  schedule:
+    - cron: '12 1,7,13,19 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fb-cache
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+
+      - name: ดึง Forebet (fb_session อ้อม ?ff= ให้เองเมื่อโดนเด้ง)
+        env:
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PYTHONUTF8: '1'
+        run: |
+          python fb_watch.py --build-cache | tee cache.log
+          {
+            echo '## fb-cache'
+            echo '```'
+            cat cache.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # คีย์ใส่ run_id เพราะ actions/cache เขียนทับคีย์เดิมไม่ได้ — ฝั่งอ่านใช้ restore-keys กวาดเอาอันล่าสุด
+      - name: เก็บแคชไว้ให้งานเฝ้า
+        uses: actions/cache/save@v4
+        with:
+          path: fb_day_cache.json.gz
+          key: fbcache-${{ github.run_id }}
