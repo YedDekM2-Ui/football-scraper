@@ -32,6 +32,15 @@ LS_URL = "https://prod-cdn-mev-api.livescore.com/v1/api/app/date/soccer/{day}/0"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
+# แหล่งสำรอง: goaloo (ตระกูล Nowgoal) — มีลีกภูมิภาคที่ LiveScore ไม่ถ่าย
+# วัดจริง 9 ส.ค. 69: กำลังเตะ 16 คู่ · LiveScore ไม่มีถึง 11 คู่ (ลีกรัฐออสเตรเลีย, นอกลีกอังกฤษ)
+GL_URL = "https://www.goaloo.com/gf/data/bf_us.js"
+GL_HDR = dict(UA, Referer="https://www.goaloo.com/")
+GL_DEDUP = 0.62      # เจอซ้ำกับ LiveScore = ทิ้งของ goaloo · หลวมกว่า NAME_MIN ตั้งใจ
+#   ทิ้งเกินคือแค่เสียคู่ที่จะได้เพิ่ม แต่ทิ้งไม่หมดคือทำให้คู่ที่เคยจับติดพัง
+#   (พูลมี 2 แถวชื่อเดียวกัน → สาขา "ชื่อตรงเป๊ะ" ต้อง len==1 เลยหลุดไปสาขาเวลา
+#    แล้วอันดับ 1 กับ 2 คะแนนเท่ากัน ห่างไม่ถึง NAME_GAP → โดนตีตก)
+
 # ── ด่านจับคู่: ตัวเลขพวกนี้บีบไว้แน่นตั้งใจ ยอมพลาดดีกว่าจับผิด ──────────────
 NAME_MIN = 0.80      # ชื่อต้องเหมือนกัน ≥80% ทั้งสองฝั่ง (ที่ 0.70 เคยจับผิดคู่มาแล้ว)
 NAME_GAP = 0.10      # ต้องทิ้งห่างคู่อันดับ 2 อย่างน้อยเท่านี้ ไม่งั้นแปลว่าก้ำกึ่ง
@@ -119,6 +128,177 @@ def ls_pool(center=None):
     return pool
 
 
+# ── ดึงจาก goaloo (แหล่งสำรอง) ────────────────────────────────────────────────
+def _gl_split(s):
+    """แยกสมาชิกใน [...] ของ JS · รู้จัก '...' และช่องว่าง (,,) = None"""
+    out, buf, q = [], "", False
+    for ch in s:
+        if q:
+            buf += ch
+            if ch == "'":
+                q = False
+        elif ch == "'":
+            q = True
+            buf += ch
+        elif ch == ",":
+            out.append(buf.strip())
+            buf = ""
+        else:
+            buf += ch
+    out.append(buf.strip())
+    res = []
+    for v in out:
+        if v == "":
+            res.append(None)
+        elif v.startswith("'") and v.endswith("'"):
+            res.append(v[1:-1])
+        else:
+            for cast in (int, float):
+                try:
+                    res.append(cast(v))
+                    break
+                except ValueError:
+                    pass
+            else:
+                res.append(v)
+    return res
+
+
+def _gl_dt(s):
+    try:
+        return dt.datetime.strptime(str(s)[:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def goaloo_fetch(timeout=40, now=None):
+    """คืน list รูปทรงเดียวกับ ls_fetch (เวลาเป็น UTC)
+
+    ถอดฟีดเอง วัดทีละช่อง 9 ส.ค. 69 (738 คู่ · 250 ลีก):
+      A[i] = [0 matchId, 1 ช่องที่เท่าไหร่ใน B, 2 homeId, 3 guestId, 4 ชื่อเหย้า, 5 ชื่อเยือน,
+              6 เวลาเตะ, 7 เวลาเริ่มครึ่งที่กำลังเตะ, 8 สถานะ, 9 สกอร์เหย้า, 10 สกอร์เยือน,
+              11 ครึ่งแรกเหย้า, 12 ครึ่งแรกเยือน, ...]
+      B[ช่อง] = [sclassId, ชื่อย่อ, ชื่อเต็ม, สี, ..., 10 countryId]   C[n] = [countryId, ชื่อประเทศ, 0]
+      สถานะ: 0 ยังไม่เตะ · 1 ครึ่งแรก · 2 พักครึ่ง · 3 ครึ่งหลัง · -1 จบ (อื่นๆ ทิ้ง)
+
+    ⚠️ กับดักนาฬิกา — เสียเวลาไปพักใหญ่กว่าจะเจอ:
+      lastCreateTime_bfIndex เป็น UTC+8 แต่เวลาในแถว A เป็น UTC
+      → ห้ามเอาเวลาหัวไฟล์มาเป็น "ตอนนี้" ต้องใช้ UTC จริง ไม่งั้นนาทีเพี้ยนไป 480
+      พิสูจน์: Brisbane Roar เริ่มครึ่ง 07:01 · LiveScore บอกคิกออฟ 07:02 นาที 7' เราคำนวณได้ 8
+    """
+    now = now or dt.datetime.utcnow()
+    t = requests.get(GL_URL, headers=GL_HDR, timeout=timeout).text
+
+    cty = {}
+    for m in re.finditer(r"^C\[\d+\]=\[(.*?)\];\s*$", t, re.M):
+        c = _gl_split(m.group(1))
+        if len(c) > 1:
+            cty[c[0]] = c[1]
+    byslot = {}
+    for m in re.finditer(r"^B\[(\d+)\]=\[(.*?)\];\s*$", t, re.M):
+        byslot[int(m.group(1))] = _gl_split(m.group(2))
+
+    out = []
+    for m in re.finditer(r"^A\[\d+\]=\[(.*?)\];\s*$", t, re.M):
+        r = _gl_split(m.group(1))
+        if len(r) < 13:
+            continue
+        st, ko, hs = r[8], _gl_dt(r[6]), _gl_dt(r[7])
+        if ko is None or st not in (0, 1, 2, 3, -1):
+            continue
+        if st == 0:
+            eps = "NS"
+        elif st == -1:
+            eps = "FT"
+        elif st == 2:
+            eps = "HT"
+        elif hs is None:
+            continue
+        else:
+            n = int((now - hs).total_seconds() // 60) + (45 if st == 3 else 0)
+            if not 0 <= n <= 130:
+                continue          # นาฬิกาเพี้ยน = ทิ้งทั้งแถว ดีกว่าเดา
+            eps = f"{n}'"
+        b = byslot.get(r[1]) or []
+        out.append({
+            "eid": f"gl{r[0]}", "h": r[4], "a": r[5],
+            "lg": (b[2] if len(b) > 2 else None) or (b[1] if len(b) > 1 else None),
+            "cn": cty.get(b[10]) if len(b) > 10 else None,
+            "ko": ko, "eps": eps,
+            "HS": _i(r[9]) or 0, "GS": _i(r[10]) or 0,
+            "HH": _i(r[11]) if st in (2, 3, -1) else None,
+            "GH": _i(r[12]) if st in (2, 3, -1) else None,
+            "nh": norm(r[4]), "na": norm(r[5]), "src": "goaloo",
+        })
+    return out
+
+
+def score_pool(center=None, goaloo=None):
+    """LiveScore เป็นหลัก + เติมเฉพาะคู่ที่กำลังเตะซึ่ง LiveScore ไม่มี
+
+    ทำไมเติมแค่คู่ที่กำลังเตะ: คู่อื่นเตือนไม่ได้อยู่แล้ว เอามาก็มีแต่เพิ่มโอกาสชนกันในพูล
+    ทำไม LiveScore ชนะเสมอ: เลขที่วัดไว้ใน fb_trust ทั้งหมดมาจากนาฬิกา LiveScore
+    """
+    pool = ls_pool(center)
+    if os.environ.get("FB_NO_GOALOO") == "1":
+        return pool
+    try:
+        gl = goaloo_fetch() if goaloo is None else goaloo
+    except Exception as e:
+        print(f"⚠️ goaloo: {e}", flush=True)
+        return pool
+    if not gl:
+        return pool
+
+    # ── ด่านนาฬิกา: goaloo ต้องเป็น UTC เหมือน LiveScore ไม่งั้นตัดทิ้งทั้งแหล่ง ──
+    #   เผื่อวันหนึ่งเขาเปลี่ยนโซนเวลา จะได้เงียบไปเอง ไม่ใช่เอาคู่ผิดเวลามาปน
+    lsk = collections.defaultdict(list)
+    for e in pool:
+        lsk[e["nh"] + "|" + e["na"]].append(e)
+    d = sorted((g["ko"] - c[0]["ko"]).total_seconds() / 60.0
+               for g in gl for c in [lsk.get(g["nh"] + "|" + g["na"])] if c and len(c) == 1)
+    if len(d) < 3:
+        print(f"⚠️ goaloo: เทียบนาฬิกากับ LiveScore ได้แค่ {len(d)} คู่ — ไม่พอยืนยัน ข้ามไป", flush=True)
+        return pool
+    med = d[len(d) // 2]
+    if abs(med) > TIME_WIN:
+        print(f"⚠️ goaloo: นาฬิกาต่างจาก LiveScore {med:+.0f} นาที (วัด {len(d)} คู่) — ตัดทิ้ง", flush=True)
+        return pool
+
+    # ── ตัดคู่ที่ LiveScore มีอยู่แล้วออก ──────────────────────────────────────
+    #   ยกเว้นกรณีที่ LiveScore "มีชื่อคู่ แต่ค้างอยู่ที่ NS" ทั้งที่เลยเวลาเตะมาแล้ว
+    #   วัดเจอจริง 9 ส.ค. 69: ลีกรัฐควีนส์แลนด์ 4 คู่ LiveScore ขึ้น NS ส่วน goaloo บอกนาที 58-66
+    #   = เขามีคู่ในตาราง แต่ไม่ได้ตามสกอร์ให้ · แถวค้างแบบนี้ไม่ควรชนะแถวที่มีสกอร์จริง
+    tbuck = collections.defaultdict(list)
+    for e in pool:
+        tbuck[e["ko"].strftime("%Y%m%d%H%M")].append(e)
+    now = dt.datetime.utcnow()
+    add = swap = 0
+    drop = set()
+    for g in gl:
+        if parse_minute(g["eps"]) is None:
+            continue                       # ไม่ได้กำลังเตะ = ไม่มีประโยชน์
+        if g["ko"] > now:
+            continue                       # ยังไม่ถึงเวลาเตะแต่บอกว่าเตะอยู่ = ไม่เชื่อ
+        cand = []
+        for o in range(-TIME_WIN, TIME_WIN + 1, 5):
+            cand += tbuck.get((g["ko"] + dt.timedelta(minutes=o)).strftime("%Y%m%d%H%M"), [])
+        dup = [e for e in cand
+               if min(_sim(g["nh"], e["nh"]), _sim(g["na"], e["na"])) >= GL_DEDUP]
+        if any(parse_minute(e["eps"]) is not None for e in dup):
+            continue                       # LiveScore ตามสกอร์อยู่จริง = ยกให้เขา
+        for e in dup:
+            drop.add(id(e))
+            swap += 1
+        pool.append(g)
+        add += 1
+    if drop:
+        pool = [e for e in pool if id(e) not in drop]
+    print(f"➕ goaloo เติม {add} คู่ (ในนั้นแทนแถวที่ LiveScore ค้าง NS อยู่ {swap}) "
+          f"· นาฬิกาต่าง {med:+.0f} น. จาก {len(d)} คู่", flush=True)
+    return pool
+
+
 # ── ด่านจับคู่ ────────────────────────────────────────────────────────────────
 def _fb_time(m):
     try:
@@ -154,7 +334,7 @@ def join(fb, pool=None, log=True):
     fb   = {id: ฟิลด์ Forebet}  (ผลจาก fb_fetch_day)
     คืน (joined, stat) · joined = {id: แถวของ LiveScore}
     """
-    pool = ls_pool() if pool is None else pool
+    pool = score_pool() if pool is None else pool
     off, nseen = _learn_offset(fb, pool)
 
     exact = collections.defaultdict(list)
@@ -212,6 +392,7 @@ def _log_join(rows):
             for mid, m, g, sc, how in rows:
                 f.write(json.dumps({
                     "at": now, "id": mid, "how": how, "score": sc,
+                    "src": g.get("src") or "ls",
                     "fb": f"{m.get('HOST_NAME')} v {m.get('GUEST_NAME')}",
                     "ls": f"{g['h']} v {g['a']}",
                     "fb_lg": m.get("short_tag"), "ls_lg": g["lg"],
@@ -251,6 +432,7 @@ def apply_live(m, g):
     m["_eps"] = g["eps"]
     m["_ls"] = f"{g['h']} v {g['a']}"
     m["_ls_lg"] = g["lg"]
+    m["_src"] = g.get("src") or "livescore"
     m["_ko"] = g.get("ko")          # เวลาเตะจริง (UTC) — ใบเตือนเอาไป +7 เป็นเวลาไทย
     return m
 
