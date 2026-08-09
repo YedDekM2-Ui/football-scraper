@@ -296,6 +296,23 @@ def _ko_th(m):
     return (ko + timedelta(hours=7)).strftime("%H:%M ")
 
 
+def _red(m):
+    """บรรทัดใบแดง — บอกข้อเท็จจริงเฉยๆ ไม่ไปแตะ % ไม่ไปแตะด่าน
+
+    มาจาก goaloo เจ้าเดียว (Forebet/LiveScore ไม่มีให้เลย) · None = ไม่รู้ ไม่ใช่ 0
+    → ไม่รู้ก็ไม่พูด เพราะ "ไม่มีใบแดง" กับ "ไม่รู้ว่ามีไหม" คนละเรื่องกัน
+    ยังไม่เอามาเป็นเงื่อนไข — คลัง 132k คู่เป็น Forebet ล้วน ไม่มีข้อมูลใบแดงให้วัดสักคู่
+    จดไว้ก่อน อีก 2-3 เดือนค่อยวัดว่ามันเปลี่ยนอะไรจริงไหม
+    """
+    rh, ra = m.get("_rh"), m.get("_ra")
+    out = []
+    if rh:
+        out.append(f"เหย้าเหลือ {11 - rh} คน")
+    if ra:
+        out.append(f"เยือนเหลือ {11 - ra} คน")
+    return f"🟥 {' · '.join(out)}\n" if out else ""
+
+
 def fmt(m, mkt, head, why, hit, n, base, minute):
     r = RULES[mkt]
     lg = ((m.get("short_tag") or "?"), str(m.get("code") or "??").upper())
@@ -307,6 +324,7 @@ def fmt(m, mkt, head, why, hit, n, base, minute):
         f"{_ko_th(m)}{m.get('HOST_NAME')} {_i(m.get('Host_SC')) or 0}-"
         f"{_i(m.get('Guest_SC')) or 0} {m.get('GUEST_NAME')}\n"
         f"🏆 [{lg[1]}] {lg[0]}\n"
+        f"{_red(m)}"
         f"🔎 {why}\n"
         f"📊 {r['label']} — {stat}\n"
         f"⚠️ เป็นการคาดการณ์ \"พักครึ่ง → จบเกม\" ไม่ใช่ของนาทีนี้"
@@ -415,6 +433,7 @@ def log_alert(mid, m, mkt, head, minute, hit, n, b, dry):
             "lg": m.get("league_id"), "tag": m.get("short_tag"), "cc": m.get("code"),
             "h": m.get("HOST_NAME"), "a": m.get("GUEST_NAME"),
             "HH": _i(m.get("Host_SC_HT")), "GH": _i(m.get("Guest_SC_HT")),
+            "rh": m.get("_rh"), "ra": m.get("_ra"),   # ใบแดง (None = ไม่รู้) — เก็บไว้วัดทีหลัง
             "p1": _f(m.get("Pred_1")), "p2": _f(m.get("Pred_2")),
             "pro": _f(m.get("pr_over")), "pgg": _f(m.get("Pred_gg")), "gavg": _f(m.get("goalsavg")),
             "hit": hit, "n": n, "base": b,        # เลขที่โชว์ในใบนั้น
