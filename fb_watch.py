@@ -297,20 +297,17 @@ def _ko_th(m):
 
 
 def _red(m):
-    """บรรทัดใบแดง — บอกข้อเท็จจริงเฉยๆ ไม่ไปแตะ % ไม่ไปแตะด่าน
+    """ป้ายใบแดงติดข้างชื่อทีม → คืน (หน้าชื่อเหย้า, หลังชื่อเยือน)
 
+    เลขในวงเล็บ = **จำนวนใบแดง** ตรงกับที่ goaloo ส่งมาดิบๆ ไม่ต้องคำนวณต่อ
+    โชว์เฉพาะฝั่งที่โดน — ฝั่งที่ไม่โดนไม่มีอะไรโผล่เลย (สะอาดสุด ไม่มีทางอ่านผิด)
     มาจาก goaloo เจ้าเดียว (Forebet/LiveScore ไม่มีให้เลย) · None = ไม่รู้ ไม่ใช่ 0
     → ไม่รู้ก็ไม่พูด เพราะ "ไม่มีใบแดง" กับ "ไม่รู้ว่ามีไหม" คนละเรื่องกัน
     ยังไม่เอามาเป็นเงื่อนไข — คลัง 132k คู่เป็น Forebet ล้วน ไม่มีข้อมูลใบแดงให้วัดสักคู่
     จดไว้ก่อน อีก 2-3 เดือนค่อยวัดว่ามันเปลี่ยนอะไรจริงไหม
     """
     rh, ra = m.get("_rh"), m.get("_ra")
-    out = []
-    if rh:
-        out.append(f"เหย้าเหลือ {11 - rh} คน")
-    if ra:
-        out.append(f"เยือนเหลือ {11 - ra} คน")
-    return f"🟥 {' · '.join(out)}\n" if out else ""
+    return (f"[{rh}]🟥" if rh else ""), (f"🟥[{ra}]" if ra else "")
 
 
 def fmt(m, mkt, head, why, hit, n, base, minute):
@@ -319,12 +316,12 @@ def fmt(m, mkt, head, why, hit, n, base, minute):
     # ตลาด gate=global ไม่มีเลขรายลีก → โชว์เลขรวมตรงๆ ห้ามแกล้งทำเป็นเลขรายลีก
     stat = (f"วัดรวมทุกลีก {hit:.1f}% ({n:,} คู่)" if r["gate"] == "global"
             else f"ลีกนี้เข้า {hit:.1f}% (วัด {n} คู่) · ทุกลีก {base:.1f}%")
+    rpre, rpost = _red(m)
     return (
         f"⚽ {head} · {minute}\"\n"
-        f"{_ko_th(m)}{m.get('HOST_NAME')} {_i(m.get('Host_SC')) or 0}-"
-        f"{_i(m.get('Guest_SC')) or 0} {m.get('GUEST_NAME')}\n"
+        f"{_ko_th(m)}{rpre}{m.get('HOST_NAME')} {_i(m.get('Host_SC')) or 0}-"
+        f"{_i(m.get('Guest_SC')) or 0} {m.get('GUEST_NAME')}{rpost}\n"
         f"🏆 [{lg[1]}] {lg[0]}\n"
-        f"{_red(m)}"
         f"🔎 {why}\n"
         f"📊 {r['label']} — {stat}\n"
         f"⚠️ เป็นการคาดการณ์ \"พักครึ่ง → จบเกม\" ไม่ใช่ของนาทีนี้"
