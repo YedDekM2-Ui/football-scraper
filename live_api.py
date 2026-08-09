@@ -251,6 +251,7 @@ def apply_live(m, g):
     m["_eps"] = g["eps"]
     m["_ls"] = f"{g['h']} v {g['a']}"
     m["_ls_lg"] = g["lg"]
+    m["_ko"] = g.get("ko")          # เวลาเตะจริง (UTC) — ใบเตือนเอาไป +7 เป็นเวลาไทย
     return m
 
 
