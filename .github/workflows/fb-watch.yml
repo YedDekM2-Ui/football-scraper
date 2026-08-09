@@ -56,6 +56,23 @@ jobs:
           key: fbseen-
           restore-keys: fbseen-
 
+      # เช็คว่ากุญแจเดินทางถึง runner จริงและ PIKTAX รับ — กดมือเท่านั้น
+      # ไม่ให้วิ่งตอน cron เพราะรอบละ 5 นาที = ยิง GAS เปล่าๆ วันละ 288 ครั้ง
+      - name: ทดสอบทางส่ง PIKTAX
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
+        run: |
+          python - <<'PY'
+          import os, requests
+          u = (os.environ.get("PIKTAX_STATE_URL") or "").split("?")[0]
+          k = os.environ.get("PIKTAX_ADMIN_KEY", "").strip()
+          print("url:", "มี" if u else "ไม่มี", "· key:", "มี" if k else "ไม่มี", f"({len(k)} ตัว)")
+          r = requests.get(u, params={"admin": k, "action": "f5dump"}, timeout=90)
+          print("f5dump → HTTP", r.status_code, "·", len(r.text), "ตัวอักษร ·", repr(r.text[:60]))
+          PY
+
       # ⚠️ ห้ามใส่ TELEGRAM_BOT_TOKEN ตรงนี้ — send() จะเลือกทางนั้นก่อน แล้วข้าม f5alert
       #    ซึ่งแปลว่าใบเตือนจะไม่ถูกจดลงชีต → ตอบสกอร์ใต้ใบเตือนแล้วไม่มีอะไรรับ
       - name: เฝ้ารอบเดียว
