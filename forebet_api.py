@@ -172,6 +172,10 @@ def fb_fetch_day(day, markets=None, sess=None, pause=None):
             d = matches.setdefault(mid, {"_mkt": set()})
             d["_mkt"].add(tp)
             for k, v in r.items():
+                # ฟีดมีขยะขึ้นบรรทัดใหม่ติดท้ายชื่อทีมบางคู่ (เจอจริง "St Pauli\r\n" 9 ส.ค. 69)
+                # ตัดที่ต้นทางทีเดียว — ไม่งั้นมันไหลไปทั้งใบเตือน ชีต และตัวจับคู่ชื่อ
+                if isinstance(v, str):
+                    v = v.strip()
                 # ก้อนแรกชนะเสมอ (1x2 ครบสุด) — ตลาดหลังเติมเฉพาะฟิลด์ที่ยังไม่มี/ยังว่าง
                 if k not in d or d[k] in (None, "", []):
                     d[k] = v
