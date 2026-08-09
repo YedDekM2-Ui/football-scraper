@@ -56,6 +56,8 @@ jobs:
           key: fbseen-
           restore-keys: fbseen-
 
+      # ⚠️ ห้ามใส่ TELEGRAM_BOT_TOKEN ตรงนี้ — send() จะเลือกทางนั้นก่อน แล้วข้าม f5alert
+      #    ซึ่งแปลว่าใบเตือนจะไม่ถูกจดลงชีต → ตอบสกอร์ใต้ใบเตือนแล้วไม่มีอะไรรับ
       - name: เฝ้ารอบเดียว
         env:
           FB_CACHE: read
