@@ -1,0 +1,73 @@
+name: fb-watch
+
+# ตัวเตือน FABEL5 บนคลาวด์ — มีไว้เพื่อให้ปิดคอมที่บ้านได้
+#   รายการคู่ + ตัวทำนาย : อ่านจากแคชที่งาน fb-cache ดึงไว้ (ไม่แตะ Forebet เลย — IP นี้โดน 403)
+#   นาที + สกอร์สด       : ยิง LiveScore เอง (IP Actions ผ่านฉลุย วัดแล้ว 3/3)
+#
+# ไม่มีแคช / แคชไม่ใช่ของวันนี้ = เงียบ ไม่เตือน (fail-closed)
+#   เตือนด้วยรายการเมื่อวานอันตรายกว่าไม่เตือน
+#
+# ⚠️ cron ของ GitHub มาช้าได้ 5-15 นาที และหายเป็นรอบได้ · หน้าต่างเตือนกว้าง 13 นาที (นาที 45-58)
+#   → ตั้งถี่สุดที่ GitHub ยอม (5 นาที) แล้วรอบหนึ่งจบใน ~1 นาที
+#   → ยังไม่เคยวัดว่ามาตรงจริงแค่ไหน ต้องดูของจริงหนึ่งคืนก่อน
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: 'ไม่ส่งจริง แค่พิมพ์ผล'
+        type: boolean
+        default: false
+
+concurrency:
+  group: fb-watch
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+
+      - name: เอาแคช Forebet ของวันมา
+        uses: actions/cache/restore@v4
+        with:
+          path: fb_day_cache.json.gz
+          key: fbcache-
+          restore-keys: fbcache-
+
+      # กันเตือนซ้ำข้ามรอบ — ไฟล์เดียวกับ fb_watch_seen.json บนเครื่องบ้าน
+      # ไม่ commit กลับ repo เพราะรอบละ 5 นาที = วันละ 288 commit
+      - name: เอาบันทึกกันซ้ำรอบก่อนมา
+        uses: actions/cache/restore@v4
+        with:
+          path: fb_watch_seen.json
+          key: fbseen-
+          restore-keys: fbseen-
+
+      - name: เฝ้ารอบเดียว
+        env:
+          FB_CACHE: read
+          FB_NO_LIVELOG: '1'
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
+          PYTHONUTF8: '1'
+        run: python fb_watch.py --once ${{ inputs.dry && '--dry' || '' }}
+
+      - name: จำไว้ว่าเตือนอะไรไปแล้ว
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fb_watch_seen.json
+          key: fbseen-${{ github.run_id }}
