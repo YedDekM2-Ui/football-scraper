@@ -48,7 +48,19 @@ TIME_WIN = 20        # ยอมให้เวลาคิกออฟเพี
 
 # คำท้ายชื่อทีมที่แต่ละเว็บใส่ไม่เหมือนกัน — ตัดทิ้งก่อนเทียบ
 DROP = {"fc", "afc", "cf", "sc", "ac", "if", "fk", "sk", "bk", "cd", "ud", "us", "as",
-        "ss", "club", "calcio", "de", "the", "team", "ii", "b", "1"}
+        "ss", "cs", "club", "calcio", "de", "the", "team", "ii", "b", "1"}
+
+# ชื่อเมืองที่สองเว็บเขียนคนละภาษา — คนอ่านรู้ว่าที่เดียวกัน แต่ตัวเทียบตัวอักษรไม่รู้
+# (Sparta Praha ↔ Sparta Prague ได้ 0.77 ตกด่าน 0.80 ทั้งที่เป็นคู่บอลถ้วยยุโรปคู่เดียวกัน)
+ALIAS = {
+    "praha": "prague", "muenchen": "munich", "munchen": "munich", "wien": "vienna",
+    "moskva": "moscow", "roma": "rome", "milano": "milan", "torino": "turin",
+    "napoli": "naples", "genova": "genoa", "firenze": "florence", "koeln": "cologne",
+    "koln": "cologne", "sevilla": "seville", "lisboa": "lisbon", "bucuresti": "bucharest",
+    "beograd": "belgrade", "warszawa": "warsaw", "kobenhavn": "copenhagen",
+    "athina": "athens", "zuerich": "zurich", "gent": "ghent", "antwerpen": "antwerp",
+    "den": "the", "haag": "hague", "bruxelles": "brussels", "brugge": "bruges",
+}
 
 # สถานะที่แปลว่า "ไม่ได้กำลังเตะ"
 DEAD = {"ns", "ft", "aet", "ap", "pen.", "pen", "postp.", "canc.", "cancl.", "aban.",
@@ -59,11 +71,50 @@ def norm(s):
     """ชื่อทีมแบบเทียบได้ — ตัดวรรณยุกต์/เครื่องหมาย/คำท้ายทิ้ง"""
     s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
     s = s.lower().replace("&", " and ")
-    return " ".join(t for t in re.split(r"[^a-z0-9]+", s) if t and t not in DROP)
+    out = []
+    for t in re.split(r"[^a-z0-9]+", s):
+        t = ALIAS.get(t, t)           # แปลงชื่อเมืองให้เป็นภาษาเดียวกันก่อน แล้วค่อยคัดคำทิ้ง
+        if t and t not in DROP:
+            out.append(t)
+    return " ".join(out)
+
+
+def _tok_sim(x, y):
+    """คะแนนความเหมือน "คำต่อคำ" · รู้จักคำย่อ (ind→independiente, univ→university)
+
+    เงื่อนไขคำนำหน้า: ต้องยาว ≥3 ตัวทั้งคู่ ไม่งั้น "b"/"h" จะไปเกาะคำอะไรก็ได้
+    """
+    if x == y:
+        return 1.0
+    if len(x) >= 3 and len(y) >= 3 and (x.startswith(y) or y.startswith(x)):
+        return 0.95
+    return difflib.SequenceMatcher(None, x, y).ratio()
 
 
 def _sim(a, b):
-    return difflib.SequenceMatcher(None, a, b).ratio()
+    """คะแนนความเหมือนชื่อทีม 0..1
+
+    ทำไมไม่เทียบทั้งสตริงรวดเดียว (แบบเดิม): เว็บสองเจ้าตั้งชื่อยาวไม่เท่ากันเป็นปกติ
+      "Talleres Córdoba"↔"Talleres" · "Ind Medellin"↔"Independiente Medellin"
+      "St Albans City"↔"St.Albans" · "Helsingborg"↔"Helsingborgs IF"
+      ทั้งหมดนี้คือคู่เดียวกันแน่ๆ แต่ SequenceMatcher ให้ 0.67-0.78 → ตกด่าน 0.80 ทิ้งฟรี
+      (วัด 11 ส.ค. 69: ตกด่านเพราะเหตุนี้ 214 คู่ จากที่มีให้จับ 394)
+
+    วิธีใหม่: จับคำในชื่อสั้นเข้ากับคำในชื่อยาวแบบดีที่สุด แล้วเฉลี่ย
+      → คำที่ชื่อยาวมีเกินมา (เมือง/รัฐ/ชื่อเต็ม) ไม่ถูกนับเป็นความต่าง
+      → แต่ถ้าคำในชื่อสั้น "หาคู่ไม่เจอ" คะแนนตกทันที
+        เช่น "Toti City Dwellers"↔"Lae City Dwellers" ได้ 0.76 (ของเดิมให้ 0.86 — คนละทีม แต่เกือบผ่าน)
+      = เข้มขึ้นกับชื่อที่ต่างจริง หลวมลงเฉพาะกับชื่อย่อ
+    """
+    if a == b:
+        return 1.0
+    ta, tb = a.split(), b.split()
+    if not ta or not tb:
+        return 0.0
+    short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    s = sum(max(_tok_sim(x, y) for y in long_) for x in short) / len(short)
+    # ชื่อยาวมีคำเกินมาเยอะ = มั่นใจน้อยลงหน่อย (กันชื่อคำเดียวไปเกาะชื่อยาวๆ ฟรี)
+    return s * (1 - 0.04 * (len(long_) - len(short)))
 
 
 def _i(v):
