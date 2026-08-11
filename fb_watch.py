@@ -163,12 +163,25 @@ def league_ok(trust, base, gall, lg, mkt):
 
 
 # ── หาคู่ที่กำลังเตะ ───────────────────────────────────────────────────────────
+def fb_days():
+    """วันที่ต้องมีในแคชเสมอ = เมื่อวาน + วันนี้ + พรุ่งนี้
+
+    ทำไมต้องเผื่อพรุ่งนี้: งาน fb-cache รอบสุดท้ายของวันสร้างแคชตอน ~20:00 UTC
+    พอผ่านเที่ยงคืน UTC (07:00 ไทย) "วันนี้" กลายเป็นวันใหม่ที่แคชไม่มี → cache_load
+    ตีว่าแคชเก่า ปฏิเสธทั้งก้อน = ตาบอดยาวจนกว่ารอบเช้าจะมา (วัดจริง 10-11 ส.ค. 69
+    GitHub รันสายจากคิว 1.5-2 ชม. ทุกรอบ → รูเงียบ 07:00-10:00 ไทยทุกเช้า)
+    ใส่พรุ่งนี้ไว้ตั้งแต่แรก รอบดึกก็ครอบวันถัดไปอยู่แล้ว งานมาสายไม่เป็นไร
+    """
+    t = date.today()
+    return [(t - timedelta(days=1)).isoformat(), t.isoformat(), (t + timedelta(days=1)).isoformat()]
+
+
 def fetch_fb(route):
-    """ดึงรายการคู่ Forebet ของเมื่อวาน+วันนี้ (3 ตลาดที่กฎใช้จริง)"""
+    """ดึงรายการคู่ Forebet ของเมื่อวาน+วันนี้+พรุ่งนี้ (3 ตลาดที่กฎใช้จริง)"""
     fb = {}
-    for d in (date.today() - timedelta(days=1), date.today()):
+    for d in fb_days():
         try:
-            ms, _ = fbapi.fb_fetch_day(d.isoformat(), markets=("1x2", "uo", "bts"), sess=route)
+            ms, _ = fbapi.fb_fetch_day(d, markets=("1x2", "uo", "bts"), sess=route)
             fb.update(ms)
         except Exception as e:
             print(f"⚠️ Forebet {d}: {e}", flush=True)
@@ -188,7 +201,7 @@ def cache_build():
     slim = {k: {kk: (sorted(vv) if isinstance(vv, set) else vv) for kk, vv in v.items()}
             for k, v in fb.items()}
     blob = json.dumps({"built": datetime.now().isoformat(timespec="seconds"),
-                       "days": [(date.today() - timedelta(days=1)).isoformat(), date.today().isoformat()],
+                       "days": fb_days(),
                        "fb": slim}, ensure_ascii=False).encode("utf-8")
     tmp = CACHE + ".tmp"
     with gzip.open(tmp, "wb") as f:
