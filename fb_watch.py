@@ -510,6 +510,10 @@ def stamp_goals(matches, minute_of, seen, dry):
     """
     today = date.today().isoformat()
     todo = []
+    # นับเหตุผลที่ "ไม่ได้จด" ไว้ด้วย — 9 ส.ค. 69 จดได้ 5 จาก 13 ใบที่มีลูกมาจริง
+    # แล้วย้อนหลังหาสาเหตุไม่ได้เพราะล็อกไม่เคยบอกว่าตกด่านไหน · คราวนี้ให้มันบอกเอง
+    skip = {"ตกจากตารางบอลสด": 0, "ไม่มีสกอร์พักครึ่ง": 0, "ยังไม่มีลูกใหม่": 0}
+    alerted_today = [k for k in seen if k.startswith(today + ":") and "|G" not in str(seen[k])]
     for mid, m in matches.items():
         key = f"{today}:{mid}"
         mark = str(seen.get(key) or "")
@@ -519,10 +523,18 @@ def stamp_goals(matches, minute_of, seen, dry):
         HH, GH = _i(m.get("Host_SC_HT")), _i(m.get("Guest_SC_HT"))
         mn = minute_of.get(mid)
         if None in (HS, GS, HH, GH) or mn is None:
+            skip["ไม่มีสกอร์พักครึ่ง"] += 1
             continue
         if HS + GS <= HH + GH:
+            skip["ยังไม่มีลูกใหม่"] += 1
             continue                      # ยังไม่มีลูกใหม่ (ใบออกตอนสกอร์เท่าพักครึ่งเป๊ะ)
         todo.append((key, mid, mn))
+    # ใบที่เตือนไปแล้ววันนี้ แต่ไม่โผล่ใน matches แล้ว = จบเกม/หลุดฟีด → หมดสิทธิ์จดตลอดกาล
+    skip["ตกจากตารางบอลสด"] = len(alerted_today) - sum(
+        1 for k in alerted_today if k.split(":", 1)[1] in matches)
+    if any(skip.values()):
+        print("  ⏳ ยังไม่ได้จดนาทีลูก: "
+              + " · ".join(f"{k} {v}" for k, v in skip.items() if v), flush=True)
     if not todo:
         return 0
 
