@@ -1,0 +1,71 @@
+# ใบ "ก่อนเกม" จากค่าคุ้มของ Forebet — แยกขาดจาก fb-watch (เครื่องเตือนสด)
+#
+# ⚠️ อย่าเอาไปรวมกับ fb-watch.yml
+#    fb-watch = เตือนสดตอนพักครึ่ง (ห้ามเตือนก่อนเกม — CLAUDE.md ข้อ 2)
+#    fb-value = ใบก่อนเกมล้วนๆ คนละสมอง คนละไฟล์ seen คนละท่อส่ง (notify ไม่ใช่ f5alert)
+#
+# ⚠️ ห้ามใส่ TELEGRAM_BOT_TOKEN ตรงนี้เหมือนกัน — เก็บโทเคนไว้ที่ PIKTAX ที่เดียว
+#
+# อ่านแคชอย่างเดียว ไม่แตะ Forebet เลย (IP ของ Actions โดน Cloudflare เด้ง 403)
+# → ต้องรอให้ fb-cache สร้างแคชเสร็จก่อน จึงตั้งเวลาให้ตามหลัง fb-cache 14 นาที
+name: fb-value
+
+on:
+  schedule:
+    # ทุก 2 ชม. ที่นาที 26 — ไม่ใช่ 4 รอบตาม fb-cache
+    #   เหตุผล: ตัวนี้ "อ่านแคช" อย่างเดียว ไม่แตะ Forebet → รันถี่ได้ไม่มีต้นทุน
+    #   รอบ 6 ชม. บังคับให้หน้าต่างต้องกว้าง 30 นาที–7 ชม. = ใบมาถึงมือไม่สม่ำเสมอ
+    #   (บางใบมา 7 ชม.ก่อนเตะ บางใบมา 31 นาที) รอบ 2 ชม. หดเหลือ 30 นาที–3 ชม.
+    - cron: '26 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fb-value
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  value:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: ลง requests
+        run: pip install --quiet requests
+
+      # แคชคู่บอลของวัน — สร้างโดยงาน fb-cache (อ่านอย่างเดียว ห้ามเซฟทับ)
+      - name: ดึงแคช Forebet
+        uses: actions/cache/restore@v4
+        with:
+          path: fb_day_cache.json.gz
+          key: fbcache-
+          restore-keys: fbcache-
+
+      # ไฟล์กันส่งซ้ำ — ของตัวเอง ห้ามใช้ร่วมกับ fb_watch_seen.json
+      - name: ดึงรายการที่ส่งไปแล้ว
+        uses: actions/cache/restore@v4
+        with:
+          path: fb_value_seen.json
+          key: fbvseen-
+          restore-keys: fbvseen-
+
+      - name: หาใบก่อนเกม
+        env:
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
+          PYTHONUTF8: '1'
+        run: python fb_value.py --lead 30 --lead-max 180
+
+      - name: เก็บรายการที่ส่งไปแล้ว
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fb_value_seen.json
+          key: fbvseen-${{ github.run_id }}
