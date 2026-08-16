@@ -126,55 +126,63 @@ def _now_bkk():
 
 
 # ── คัดใบ ─────────────────────────────────────────────────────────────────────
-def pick(m, lead_min, lead_max_min=None):
+def pick(m, lead_min, lead_max_min=None, stat=None):
     """คืน dict ของใบถ้าผ่านด่าน · คืน None ถ้าไม่ผ่าน
 
     ลำดับด่าน (เรียงจากถูกที่สุดไปแพงที่สุด):
       1. ยังไม่จบ/ยังไม่เตะ   2. ไม่ใช่บอลถ้วย   3. Forebet ไม่ได้ทายเสมอ
       4. Prob >= 70          5. ค่าคุ้ม >= +40%   6. อยู่ในหน้าต่างเวลาก่อนเตะ
+
+    stat = dict นับว่าตกด่านไหน — บทเรียนจาก gmin ของเครื่องสด:
+    ล็อกที่บอกแค่ยอดรวม แยก "ไม่มีคู่เข้าเกณฑ์" กับ "ด่านพัง" ไม่ออก ต้องให้มันบอกเอง
     """
-    if str(m.get("comment") or "").strip().upper() == "FT":
+    def no(k):
+        if stat is not None:
+            stat[k] = stat.get(k, 0) + 1
         return None
+
+    if str(m.get("comment") or "").strip().upper() == "FT":
+        return no("จบแล้ว")
     if _i(m.get("isCup")) == 1:
-        return None                                    # บอลถ้วยตัวแปรเยอะ (ทีมสำรอง/ต่างชั้น) ไม่เอา
+        return no("บอลถ้วย")                            # ตัวแปรเยอะ (ทีมสำรอง/ต่างชั้น) ไม่เอา
 
     pr = {"1": _i(m.get("Pred_1")), "X": _i(m.get("Pred_X")), "2": _i(m.get("Pred_2"))}
     if None in pr.values():
-        return None
+        return no("ไม่มีค่าทาย")
     side = max(pr, key=lambda k: pr[k])
     if side == "X":
-        return None                                    # ทายเสมอ = ไม่มีฝั่งให้เลือก ตัดทิ้ง
+        return no("ทายเสมอ")                            # ไม่มีฝั่งให้เลือก ตัดทิ้ง
     if pr[side] < PROB_MIN:
-        return None
+        return no("Prob<%d" % PROB_MIN)
 
     coef = _f({"1": m.get("best_odd_1"), "X": m.get("best_odd_X"),
                "2": m.get("best_odd_2")}[side])
     if not coef or coef <= 1:
-        return None
+        return no("ไม่มีราคา")
     edge = pr[side] / 100.0 * coef - 1.0
     if edge < EDGE_MIN:
-        return None
+        return no("ค่าคุ้ม<+%d%%" % (EDGE_MIN * 100))
 
     ko = _ko_bkk(m)
     if ko is None:
-        return None
+        return no("ไม่รู้เวลาเตะ")
     now = _now_bkk()
     if ko <= now + timedelta(minutes=lead_min):
-        return None                                    # จวนเตะ/เตะไปแล้ว = สายเกินจะลง
+        return no("จวนเตะ/เตะแล้ว")                      # สายเกินจะลง
     if lead_max_min and ko > now + timedelta(minutes=lead_max_min):
         # ⏱ เพดานเวลา — ยังอีกไกลเกิน ปล่อยไว้ให้รอบหลังยิง
         #    เหตุผล: Coef บนการ์ดคือราคา "ตอนแคชถูกสร้าง" ถ้ายิงล่วงหน้าครึ่งวัน
         #    ราคาขยับจนค่าคุ้มที่โฆษณาไว้ไม่จริงแล้ว → การ์ดกลายเป็นตัวหลอก
         #    ตั้ง 180 นาที (3 ชม.) เพราะรอบงานห่างกัน 2 ชม. → กว้างกว่ารอบ 1 ชม. ไม่มีคู่ไหนหลุด
-        return None
+        return no("ยังอีกไกล")
 
     hs, gs = _i(m.get("host_sc_pr")), _i(m.get("guest_sc_pr"))
     if hs is None or gs is None:
-        return None                                    # ไม่มีสกอร์ที่ทาย = ไม่มีอะไรจะบอก
+        return no("ไม่มีสกอร์ที่ทาย")                     # ไม่มีอะไรจะบอก
 
     tier = next(((lab, hit, n) for lo, lab, hit, n in TIERS if pr[side] >= lo), None)
     if tier is None:
-        return None
+        return no("ไม่เข้าชั้นความเข้ม")
 
     return dict(id=str(m.get("id") or ""), ko=ko, edge=edge, coef=coef, prob=pr[side],
                 host=m.get("HOST_NAME"), guest=m.get("GUEST_NAME"),
@@ -354,17 +362,21 @@ def main():
         return 0
 
     seen = load_seen()
-    picks = []
+    picks, stat = [], {}
     for m in fb.values():
-        p = pick(m, a.lead, a.lead_max or None)
+        p = pick(m, a.lead, a.lead_max or None, stat)
         if p and p["id"] and p["id"] not in seen:
             picks.append(p)
 
     picks.sort(key=lambda p: (-p["prob"], -p["edge"]))
     print(f"อ่านแคช {len(fb):,} คู่ → ผ่านด่าน {len(picks)} ใบ (ส่งได้ไม่เกิน {a.max})", flush=True)
+    if stat:
+        # 🔎 ตกด่านไหนบ้าง — ไว้ดูว่า "0 ใบ" เพราะไม่มีคู่เข้าเกณฑ์ หรือเพราะด่านพัง
+        print("   ตกด่าน: " + " · ".join(f"{k} {v}" for k, v in
+                                        sorted(stat.items(), key=lambda kv: -kv[1])), flush=True)
 
     for p in picks[:a.max]:
-        if send(fmt(p), dry=a.dry):
+        if send(p, dry=a.dry):   # ⚠️ ส่ง dict ไม่ใช่ข้อความ — send() เรียก fmt() เองข้างใน
             seen.add(p["id"])
             if not a.dry:
                 log(p)
