@@ -281,6 +281,18 @@ for d in rows:
         + (f'<span class="lvb b{lv}">{LVN[lv]}</span>' if lv > 1 else "")
         + "</td></tr>")
 
+# ── สถิติออโต้: จดใบวันนี้ (ก่อนเตะ) + เกรดวันที่ผ่านมา ────────────────────────
+# ⚠️ ห้ามให้ขั้นนี้ล้มพาทั้งหน้าไปด้วย — สถิติหายรอบเดียวไม่เป็นไร หน้าหายไม่ได้
+STAT = ""
+try:
+    import fb_stat
+    if LIVE:
+        fb_stat.record(rows, level, edge)
+        fb_stat.grade()
+    STAT = fb_stat.stat_html()
+except Exception as e:
+    print(f"⚠️ สถิติออโต้พลาด ({type(e).__name__}: {e}) → หน้ายังออกปกติ")
+
 CSS = """
 :root{
   --bg:#F2F3F6; --surf:#FFFFFF; --surf2:#FAFBFC; --ink:#131720; --mut:#606A7B;
@@ -886,6 +898,8 @@ HTML = f"""<!doctype html>
       แค่ไม่ได้ไฮไลท์ — ดูได้ แต่ตัวเลขย้อนหลังไม่หนุนให้ลงเงิน</p>
   </div>
 </section>
+
+{STAT}
 
 <section>
   <div><p class="eyebrow">ข้อมูลดิบ · {len(rows)} คู่</p><h2>ตารางกลางทุกคู่</h2>
