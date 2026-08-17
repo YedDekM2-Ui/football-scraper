@@ -73,7 +73,12 @@ jobs:
             exit 1
           fi
 
+      # enablement: true = ให้ตัวมันเปิด GitHub Pages ของ repo นี้เองในรอบแรก
+      #   (โทเคนส่วนตัวของเจ้าของไม่มีสิทธิ์ Pages แต่ GITHUB_TOKEN ของ workflow มี
+      #    ตามบล็อก permissions ข้างบน) → ไม่ต้องเข้าไปกดตั้งค่าในเว็บเลย
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
