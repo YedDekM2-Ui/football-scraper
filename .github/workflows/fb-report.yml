@@ -35,7 +35,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # write เพราะต้องคอมมิต stats/picks.jsonl กลับเข้า repo
+  #   (CLAUDE.md: ของที่เก็บไว้วัดทีหลัง ห้ามค้างบน runner — หายทุกรอบ)
+  contents: write
   pages: write
   id-token: write
 
@@ -72,6 +74,24 @@ jobs:
             echo "❌ หน้ารายงานเล็กผิดปกติ (ปกติ ~280KB) — ไม่ deploy ทับของเดิม"
             exit 1
           fi
+
+      # แฟ้มสถิติต้องกลับเข้า repo ทุกรอบ ไม่งั้นจดไปก็หายพร้อม runner
+      #   ทำก่อน deploy: ถ้า deploy เจอ 503 (เคยเจอ) ใบที่จดไว้ก็ยังไม่หาย
+      - name: คอมมิตแฟ้มสถิติ
+        if: always()
+        run: |
+          if [ ! -f stats/picks.jsonl ]; then echo "ไม่มีแฟ้มสถิติ ข้าม"; exit 0; fi
+          git config user.name  "fb-report bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stats/picks.jsonl
+          if git diff --cached --quiet; then echo "ไม่มีอะไรเปลี่ยน"; exit 0; fi
+          git commit -m "stats: $(wc -l < stats/picks.jsonl) ใบ [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase --autostash -q origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            echo "push ชน ลองใหม่ ($i)"; sleep 5
+          done
+          echo "⚠️ คอมมิตสถิติไม่สำเร็จ — แต่ไม่ล้มงาน หน้ายังต้องขึ้น"
 
       # enablement: true = ให้ตัวมันเปิด GitHub Pages ของ repo นี้เองในรอบแรก
       #   (โทเคนส่วนตัวของเจ้าของไม่มีสิทธิ์ Pages แต่ GITHUB_TOKEN ของ workflow มี
