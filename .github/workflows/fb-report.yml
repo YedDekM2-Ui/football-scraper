@@ -1,0 +1,83 @@
+# หน้ารายงาน "ด่านแรก" — ข้อมูลครบในหน้าเดียว ลิงก์เดิมตลอด อัพเดทให้เองทุกวัน
+#
+# ลิงก์: https://yeddekm2-ui.github.io/football-scraper/
+#
+# ⚠️ เครื่องที่ 4 — แยกขาดจาก 3 ตัวที่มีอยู่ อย่าเอาไปรวมกัน
+#    fb-watch  = เตือนสดตอนพักครึ่ง (ห้ามเตือนก่อนเกม — CLAUDE.md ข้อ 2)
+#    fb-value  = ใบก่อนเกม ค่าคุ้ม +40% (เจ้าของสั่ง "ปล่อยไว้เท่าเดิม")
+#    fb-cache  = คนดึงแคชให้ 2 ตัวข้างบน
+#    fb-report = งานนี้ · ไม่ส่งข้อความหาใครเลย แค่สร้างหน้าเว็บ (ไม่มีท่อ notify/f5alert)
+#
+# ⚠️ ห้ามใส่ TELEGRAM_BOT_TOKEN ตรงนี้ — งานนี้ไม่ต้องส่งข้อความ ไม่มีเหตุให้ต้องมีโทเคน
+#
+# ทำไมไม่อ่านแคชเหมือน fb-value: หน้านี้ต้องมีคอลัมน์ที่แคชไม่มี (BTTS/สูงต่ำ/สกอร์ทาย)
+#   → ดึง Forebet เอง ผ่าน forebet_api ซึ่งลองยิงตรงก่อนแล้วถอยไปอ้อม PIKTAX ?ff= (IP Actions โดน 403)
+#   → ช้า (อ้อม Jina ~90 วิ/หน้า × 3 ตลาด × 2 วัน) จึงตั้ง timeout ไว้เผื่อเยอะ
+
+name: fb-report
+
+on:
+  schedule:
+    # 4 รอบ/วัน (UTC) = 07:41 · 13:41 · 19:41 · 01:41 เวลาไทย
+    #   รอบ 00:41 UTC คือรอบที่ทำให้ตอนเช้าไทยมีหน้าของ "วันนี้" รออยู่แล้ว
+    #   ทำไม 4 รอบ: cron ของ GitHub หายเป็นรอบได้ (เคยตายทั้ง workflow มาแล้ว) รอบถัดไปซ่อมเอง
+    #   นาที 41 = หลบไม่ให้ชนกับ fb-cache (นาที 12) และ fb-value (นาที 26) ที่ใช้ท่อ ?ff= เดียวกัน
+    - cron: '41 0,6,12,18 * * *'
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'วันไทยที่จะทำรายงาน (YYYY-MM-DD) เว้นว่าง = วันนี้'
+        type: string
+        required: false
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: ลง requests
+        run: pip install --quiet requests
+
+      - name: สร้างหน้ารายงาน
+        env:
+          # ใช้อ้อม ?ff= ตอน Forebet เด้ง 403 — ไม่มีตัวนี้ = ดึงไม่ได้เลย
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PYTHONUTF8: '1'
+        run: |
+          mkdir -p _site
+          python -X utf8 fb_report.py "${{ inputs.day }}" _site/index.html
+          # ด่าน fail-closed: ไฟล์ไม่เกิด/เล็กผิดปกติ = ล้มงานเลย
+          # ห้าม deploy หน้าเปล่าไปทับหน้าดีของรอบก่อน (หน้าเก่ายังอ่านได้ ดีกว่าหน้าว่าง)
+          sz=$(stat -c%s _site/index.html 2>/dev/null || echo 0)
+          echo "ไฟล์ _site/index.html = $sz bytes"
+          if [ "$sz" -lt 50000 ]; then
+            echo "❌ หน้ารายงานเล็กผิดปกติ (ปกติ ~280KB) — ไม่ deploy ทับของเดิม"
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
