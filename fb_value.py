@@ -39,6 +39,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
+from fb_block import blocked
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "fb_day_cache.json.gz")     # แคชเดียวกับที่ fb-cache สร้าง (อ่านอย่างเดียว ห้ามเขียน)
 SEEN = os.path.join(HERE, "fb_value_seen.json")        # ไฟล์ seen ของตัวเอง — ห้ามใช้ร่วมกับ fb_watch_seen.json
@@ -143,6 +145,8 @@ def pick(m, lead_min, lead_max_min=None, stat=None):
 
     if str(m.get("comment") or "").strip().upper() == "FT":
         return no("จบแล้ว")
+    if blocked(m):
+        return no("ลีกที่ปิดไว้")     # เว็บไม่เปิดให้แทง
     if _i(m.get("isCup")) == 1:
         return no("บอลถ้วย")                            # ตัวแปรเยอะ (ทีมสำรอง/ต่างชั้น) ไม่เอา
 
