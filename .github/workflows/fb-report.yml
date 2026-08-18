@@ -58,6 +58,17 @@ jobs:
       - name: ลง requests
         run: pip install --quiet requests
 
+      # เกรดใบเตือน FABEL5 ที่ค้าง — เอาสกอร์จบจากฟีด 1x2 ไปให้ GAS ตัดสิน
+      # ทำไมอยู่ที่นี่: รอบนี้ดึง Forebet อยู่แล้ว วันละ 4 รอบก็พอ (คู่จบครบตั้งแต่รอบเช้า)
+      # continue-on-error: ล้มได้ ห้ามลากหน้ารายงานตายตาม — รอบหน้าเก็บตกเอง
+      - name: เกรดใบเตือนที่ค้าง
+        continue-on-error: true
+        env:
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
+          PYTHONUTF8: '1'
+        run: python fb_f5grade.py
+
       - name: สร้างหน้ารายงาน
         env:
           # ใช้อ้อม ?ff= ตอน Forebet เด้ง 403 — ไม่มีตัวนี้ = ดึงไม่ได้เลย
