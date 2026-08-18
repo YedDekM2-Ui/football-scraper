@@ -40,6 +40,7 @@ from datetime import date, datetime, timedelta
 import requests
 
 import forebet_api as fbapi
+from fb_block import blocked
 import live_api
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -572,6 +573,7 @@ def sweep(route, trust, base, gall, seen, dry):
     minute_of = {mid: m.get("_min") for mid, m in matches.items()}
     log_live(matches, minute_of)
     sent = 0
+    skipped_lg = {}
     for mid, m in matches.items():
         minute = minute_of[mid]
         if not (MIN_FROM <= minute <= MIN_TO):
@@ -579,6 +581,10 @@ def sweep(route, trust, base, gall, seen, dry):
         key = f"{date.today().isoformat()}:{mid}"
         if key in seen:
             continue                  # 1 คู่ = 1 ใบต่อวัน · ตัวนี้เป็น "ตัวชี้จุด" ไม่ใช่ตัวสาดใบ
+        bl = blocked(m)
+        if bl:
+            skipped_lg[bl] = skipped_lg.get(bl, 0) + 1
+            continue              # เว็บไม่เปิดให้แทงลีกนี้ — ใบสวยแค่ไหนก็ลงไม่ได้
         # หลายกฎยิงคู่เดียวกันได้ (เช่น ยิงข้างเดียว 1-0 เข้าทั้ง bts1_g1 และ over_g1)
         # → ส่งใบเดียว เอาอันที่วัดได้แม่นสุด
         cand = []
@@ -611,6 +617,10 @@ def sweep(route, trust, base, gall, seen, dry):
     inplay = sum(1 for v in minute_of.values() if v is not None)
     window = sum(1 for v in minute_of.values() if v is not None and MIN_FROM <= v <= MIN_TO)
     print(f"[{stamp}] บอลสด {inplay} คู่ (อยู่ในช่วงเตือน {window}) · เตือน {sent} · {src}", flush=True)
+    if skipped_lg:
+        # ต้องบอกออกมา ไม่งั้น "0 ใบ" แยกไม่ออกว่าไม่มีคู่เข้าเกณฑ์ หรือโดนด่านลีกกิน
+        print("   🚫 ข้ามลีกที่ปิดไว้: " + " · ".join(f"{k} {v}" for k, v in
+              sorted(skipped_lg.items(), key=lambda x: -x[1])), flush=True)
     return sent
 
 
