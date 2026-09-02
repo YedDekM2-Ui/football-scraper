@@ -112,3 +112,32 @@ jobs:
         with:
           path: fb_watch_seen.json
           key: fbseen-${{ github.run_id }}
+
+      # รับสายให้บอท Pickup แทนเทเลแกรม — "ทำแบบบอลเก่า"
+      # บอทเก่า (PIKTAX) ไม่เคยเงียบเพราะมันไม่มี webhook: มันเดินไปถามเทเลแกรมเองเป็นรอบ ๆ
+      #   ฝั่งโน้นจึงไม่แคร์ว่า Apps Script ตอบ 302 กลับไป = ไม่มีทางยิงซ้ำจนคิวตัน
+      # โปรเจกต์ Pickup ตั้งใจไม่มี trigger (ไม่ใส่สิทธิ์ script.scriptapp เจ้าของจะต้องกดอนุญาตใหม่ทั้งชุด)
+      #   เลยยืมนาฬิกาของงานนี้มากด: ยิง ?p=poll ถี่ ๆ ตลอดช่วงท้ายรอบ
+      # ทำไมไม่ให้ GAS นั่งรอเอง (long poll): Apps Script ตัดที่ 6 นาที และกูเกิลนับเวลารันรายวัน
+      #   ยิงสั้น ๆ หลายครั้งจึงถูกกว่าและตอบไวกว่าบอทเก่า (บอทเก่ารอบละ 60 วิ)
+      # ต้องเป็นสเต็ปสุดท้าย ไม่งั้นไปหน่วงงานเฝ้าบอลที่มีหน้าต่างแค่ 13 นาที
+      # ล้มยังไงห้ามลามไปทำให้งานเฝ้าบอลแดง
+      - name: รับสายบอท Pickup (ดึงเองแทน webhook)
+        if: always()
+        continue-on-error: true
+        env:
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
+        run: |
+          U="${PIKTAX_STATE_URL%%\?*}"
+          [ -n "$U" ] || { echo "ไม่รู้ที่อยู่เว็บแอป ข้าม"; exit 0; }
+          END=$(( $(date +%s) + 200 ))
+          n=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            n=$((n+1))
+            curl -sS -L --max-time 20 --get "$U" \
+              --data-urlencode "p=poll" --data-urlencode "admin=$PIKTAX_ADMIN_KEY" || true
+            echo
+            sleep 20
+          done
+          echo "ดึง $n รอบ"
