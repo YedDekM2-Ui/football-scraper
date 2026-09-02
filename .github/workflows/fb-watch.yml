@@ -41,6 +41,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ปลุกบอทเทเลแกรมที่คิวตัน — เกาะรอบ 5 นาทีนี้เพราะโปรเจกต์บอทไม่มี Actions ของตัวเอง
+      # ทำไมต้องมี: Apps Script ตอบ POST เป็น 302 เสมอ เทเลแกรมนับว่าส่งไม่ถึง เลยยิงใบเดิมซ้ำไม่เลิก
+      #   คิวโตขึ้นทีละใบจนของใหม่ไปต่อท้ายของเก่า = เจ้าของพิมพ์อะไรไปบอทก็เงียบ (เจอจริง 2 ก.ย. 69)
+      # ไม่ใช่ "ยิงเปล่า" แบบ probe — ฝั่ง GAS มีเงื่อนไขของมันเอง (คิวต้องถึง 5 · เงียบ 3 นาที · พัก 10 นาที)
+      #   ส่วนใหญ่จบที่ "คิวยังไม่ถึง" ไม่ทำอะไรต่อ · ล้มยังไงห้ามลามไปล้มงานเฝ้าบอล
+      - name: ล้างคิวบอทเทเลแกรมถ้าตัน
+        continue-on-error: true
+        env:
+          PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
+        run: |
+          U="${PIKTAX_STATE_URL%%\?*}"
+          curl -sS -L --max-time 45 --get "$U" --data-urlencode "p=hookfix" --data-urlencode "k=$PIKTAX_ADMIN_KEY" || true
+          echo
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
