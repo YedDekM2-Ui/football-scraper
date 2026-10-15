@@ -30,11 +30,13 @@ usage:
   python fb_value.py --lead 30    # เอาเฉพาะคู่ที่ยังไม่เตะในอีก 30 นาทีขึ้นไป
 """
 import argparse
+import difflib
 import gzip
 import json
 import os
 import re
 import sys
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 
 import requests
@@ -127,8 +129,117 @@ def _now_bkk():
     return datetime.now(timezone(timedelta(hours=7)))
 
 
+# ── ราคาสำรองจาก MoviOdds (ไม่ต้องคีย์) ────────────────────────────────────────
+# ใช้เฉพาะตอนที่แคช Forebet ไม่มีราคา (best_odd ว่าง/<=1) — ราคา Forebet ยังเป็นตัวหลักเสมอ
+# ตัวจับคู่ชื่อทีมก๊อปจาก live_api.py ตั้งใจซ้ำ ไม่ import (เหตุผลเดียวกับ cache_load)
+MO_URL = "https://moviodds.com/odds?groups=40"
+NAME_MIN, NAME_GAP, TIME_WIN = 0.80, 0.10, 20     # ชื่อต้องคล้าย ≥0.80 ทั้ง 2 ฝั่ง · ห่างอันดับ 2 ≥0.10 · เวลาเตะคลาดไม่เกิน 20 นาที
+DROP = {"fc", "afc", "cf", "sc", "ac", "if", "fk", "sk", "bk", "cd", "ud", "us", "as", "ss", "cs",
+        "club", "calcio", "de", "the", "team", "ii", "b", "1"}
+ALIAS = {"praha": "prague", "muenchen": "munich", "munchen": "munich", "wien": "vienna",
+         "moskva": "moscow", "roma": "rome", "milano": "milan", "torino": "turin",
+         "napoli": "naples", "genova": "genoa", "firenze": "florence", "koeln": "cologne",
+         "koln": "cologne", "sevilla": "seville", "lisboa": "lisbon", "bucuresti": "bucharest",
+         "beograd": "belgrade", "warszawa": "warsaw", "kobenhavn": "copenhagen",
+         "athina": "athens", "zuerich": "zurich", "gent": "ghent", "antwerpen": "antwerp",
+         "den": "the", "haag": "hague", "bruxelles": "brussels", "brugge": "bruges"}
+
+
+def norm(s):
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    s = s.lower().replace("&", " and ")
+    out = []
+    for t in re.split(r"[^a-z0-9]+", s):
+        t = ALIAS.get(t, t)
+        if t and t not in DROP:
+            out.append(t)
+    return " ".join(out)
+
+
+def _tok_sim(x, y):
+    if x == y:
+        return 1.0
+    if len(x) >= 3 and len(y) >= 3 and (x.startswith(y) or y.startswith(x)):
+        return 0.95
+    return difflib.SequenceMatcher(None, x, y).ratio()
+
+
+def _sim(a, b):
+    if a == b:
+        return 1.0
+    ta, tb = a.split(), b.split()
+    if not ta or not tb:
+        return 0.0
+    short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    s = sum(max(_tok_sim(x, y) for y in long_) for x in short) / len(short)
+    return s * (1 - 0.04 * (len(long_) - len(short)))
+
+
+def moviodds_parse(data):
+    """JSON ของ MoviOdds → [{h, a, ko(UTC), px{"1","X","2"}}] เฉพาะคู่ที่ยังไม่เตะ + มีราคาครบ"""
+    rows = data if isinstance(data, list) else (data.get("matches") or data.get("data") or [])
+    out = []
+    for r in rows:
+        try:
+            if r.get("in_play"):
+                continue
+            ko = datetime.fromisoformat(str(r.get("kickoff_utc")).replace("Z", "+00:00"))
+            if ko.tzinfo is None:
+                ko = ko.replace(tzinfo=timezone.utc)
+            px = {}
+            for q in r.get("quotes") or []:
+                k, v = str(q.get("n2") or "").upper(), _f(q.get("odds_dec"))
+                if k in ("1", "X", "2") and v and v > 1:
+                    px[k] = max(px.get(k, 0), v)
+            if len(px) == 3:
+                out.append(dict(h=norm(r.get("home")), a=norm(r.get("away")), ko=ko, px=px))
+        except Exception:
+            continue
+    return out
+
+
+def moviodds_load(timeout=20):
+    """ล้ม = คืน [] แล้วพิมพ์บรรทัดเดียว — ไม่มีราคาสำรองก็แค่ใช้ของ Forebet ตามเดิม"""
+    try:
+        r = requests.get(MO_URL, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            print(f"   MoviOdds: HTTP {r.status_code} (ข้ามราคาสำรอง)", flush=True)
+            return []
+        mo = moviodds_parse(r.json())
+        print(f"   MoviOdds: ได้ราคา {len(mo)} คู่", flush=True)
+        return mo
+    except Exception as e:
+        print(f"   MoviOdds: ดึงไม่ได้ ({type(e).__name__}) ข้ามราคาสำรอง", flush=True)
+        return []
+
+
+def mo_price(m, mo):
+    """หาราคา 1X2 ของคู่นี้ใน MoviOdds · ไม่ชัวร์ = คืน None (ไม่เดา)"""
+    ko = _ko_bkk(m)
+    if not mo or ko is None:
+        return None
+    ko = ko.astimezone(timezone.utc)
+    h, a = norm(m.get("HOST_NAME")), norm(m.get("GUEST_NAME"))
+    if not h or not a:
+        return None
+    cands = []
+    for x in mo:
+        if abs((x["ko"] - ko).total_seconds()) > TIME_WIN * 60:
+            continue
+        cands.append((min(_sim(h, x["h"]), _sim(a, x["a"])), x))
+    if not cands:
+        return None
+    cands.sort(key=lambda t: -t[0])
+    best, x = cands[0]
+    if best < NAME_MIN:
+        return None
+    if len(cands) > 1 and best - cands[1][0] < NAME_GAP:
+        return None                                   # สองคู่คล้ายกันเกิน แยกไม่ออก
+    return x["px"]
+
+
 # ── คัดใบ ─────────────────────────────────────────────────────────────────────
-def pick(m, lead_min, lead_max_min=None, stat=None):
+def pick(m, lead_min, lead_max_min=None, stat=None, mo=None):
     """คืน dict ของใบถ้าผ่านด่าน · คืน None ถ้าไม่ผ่าน
 
     ลำดับด่าน (เรียงจากถูกที่สุดไปแพงที่สุด):
@@ -161,6 +272,13 @@ def pick(m, lead_min, lead_max_min=None, stat=None):
 
     coef = _f({"1": m.get("best_odd_1"), "X": m.get("best_odd_X"),
                "2": m.get("best_odd_2")}[side])
+    src = "Forebet"
+    if (not coef or coef <= 1) and mo:
+        px = mo_price(m, mo)                          # ราคาสำรอง — ใช้เฉพาะตอน Forebet ไม่มีราคา
+        if px:
+            coef, src = px.get(side), "MoviOdds"
+            if stat is not None:                      # ไม่ใช่ด่านตก — นับไว้ให้ล็อกบอกว่าราคาสำรองต่อติดกี่คู่
+                stat["(ใช้ราคา MoviOdds)"] = stat.get("(ใช้ราคา MoviOdds)", 0) + 1
     if not coef or coef <= 1:
         return no("ไม่มีราคา")
     edge = pr[side] / 100.0 * coef - 1.0
@@ -188,7 +306,7 @@ def pick(m, lead_min, lead_max_min=None, stat=None):
     if tier is None:
         return no("ไม่เข้าชั้นความเข้ม")
 
-    return dict(id=str(m.get("id") or ""), ko=ko, edge=edge, coef=coef, prob=pr[side],
+    return dict(id=str(m.get("id") or ""), ko=ko, edge=edge, coef=coef, prob=pr[side], src=src,
                 host=m.get("HOST_NAME"), guest=m.get("GUEST_NAME"),
                 hs=hs, gs=gs, tier=tier,
                 lg=(m.get("short_tag") or "?"), code=str(m.get("code") or "??").upper())
@@ -202,7 +320,7 @@ def fmt(p):
         f"{p['host']} vs {p['guest']}\n"
         f"Forebet ทาย {p['hs']}-{p['gs']}\n"
         f"{lab} — กลุ่มนี้ย้อนหลังเข้า {hit:.1f}% ({n} ใบ)\n"
-        f"💱 Coef {p['coef']:.2f} · ค่าคุ้ม +{p['edge'] * 100:.0f}%\n"
+        f"💱 Coef {p['coef']:.2f}{' (ราคา MoviOdds)' if p.get('src') == 'MoviOdds' else ''} · ค่าคุ้ม +{p['edge'] * 100:.0f}%\n"
         f"⚠️ เลขนี้คือ 1X2 (แพ้/ชนะ) ไม่ใช่สกอร์เป๊ะ — สกอร์เป๊ะทั้งคลังเข้าแค่ 9.5%"
     )
 
@@ -366,9 +484,10 @@ def main():
         return 0
 
     seen = load_seen()
+    mo = moviodds_load()
     picks, stat = [], {}
     for m in fb.values():
-        p = pick(m, a.lead, a.lead_max or None, stat)
+        p = pick(m, a.lead, a.lead_max or None, stat, mo)
         if p and p["id"] and p["id"] not in seen:
             picks.append(p)
 
