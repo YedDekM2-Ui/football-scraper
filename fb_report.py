@@ -39,8 +39,34 @@ LIVE = DAY == NOW.date().isoformat()
 # วันนี้: ดึงพรุ่งนี้มาต่อท้ายด้วย ไม่งั้นกดขอตอนดึกแล้วเหลือคู่ไม่กี่คู่
 days = [DAY] + ([(NOW.date() + timedelta(days=1)).isoformat()] if LIVE else [])
 rows, seen = [], set()
+
+
+def _cache():
+    """แคชของงาน fb-cache (ตลาดเดียวกัน 1x2/uo/bts) — ใช้แทนการดึงใหม่ ประหยัดเครดิต ScrapingAnt
+    ใช้เฉพาะหน้า "วันนี้" · แคชต้องสดไม่เกิน 8 ชม. และมีตารางลีก ไม่งั้นดึงเองแบบเดิม"""
+    import gzip
+    import json
+    try:
+        with gzip.open(os.path.join(HERE, "fb_day_cache.json.gz"), "rb") as f:
+            c = json.loads(f.read().decode("utf-8"))
+        age = (datetime.utcnow() - datetime.fromisoformat(c["built"])).total_seconds() / 3600
+        if not LIVE or age > 8 or "lgs" not in c:
+            print(f"📦 ไม่ใช้แคช (อายุ {age:.1f} ชม. · มีลีก {'lgs' in c})")
+            return {}, {}, []
+        print(f"📦 ใช้แคช {len(c['fb'])} คู่ (อายุ {age:.1f} ชม. · วัน {c.get('days')})")
+        return c["fb"], c["lgs"], c.get("days") or []
+    except Exception as e:
+        print(f"📦 ไม่ใช้แคช ({type(e).__name__}: {e})")
+        return {}, {}, []
+
+
+cfb, clg, cdays = _cache()
+srcs = [(cfb, clg)] if cfb else []
 for dy in days:
-    fb, lgs = fb_fetch_day(dy, markets=["1x2", "uo", "bts"])
+    if cfb and dy in cdays:
+        continue                       # แคชมีวันนี้แล้ว ไม่ต้องดึงซ้ำ
+    srcs.append(fb_fetch_day(dy, markets=["1x2", "uo", "bts"]))
+for fb, lgs in srcs:
     for m in fb.values():
         d = mid(m, lgs)
         if d["ko"] and d["id"] not in seen:
