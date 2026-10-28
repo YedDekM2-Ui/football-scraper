@@ -18,11 +18,11 @@ name: fb-report
 
 on:
   schedule:
-    # 4 รอบ/วัน (UTC) = 07:41 · 13:41 · 19:41 · 01:41 เวลาไทย
-    #   รอบ 00:41 UTC คือรอบที่ทำให้ตอนเช้าไทยมีหน้าของ "วันนี้" รออยู่แล้ว
+    # 4 รอบ/วัน (UTC) = 08:41 · 14:41 · 20:41 · 02:41 เวลาไทย (29 ต.ค. 69 เลื่อนมาตามหลัง fb-cache)
+    #   รอบ 01:41 UTC คือรอบที่ทำให้ตอนเช้าไทยมีหน้าของ "วันนี้" รออยู่แล้ว
     #   ทำไม 4 รอบ: cron ของ GitHub หายเป็นรอบได้ (เคยตายทั้ง workflow มาแล้ว) รอบถัดไปซ่อมเอง
     #   นาที 41 = หลบไม่ให้ชนกับ fb-cache (นาที 12) และ fb-value (นาที 26) ที่ใช้ท่อ ?ff= เดียวกัน
-    - cron: '41 0,6,12,18 * * *'
+    - cron: '41 1,7,13,19 * * *'
   workflow_dispatch:
     inputs:
       day:
@@ -68,6 +68,17 @@ jobs:
           PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
           PYTHONUTF8: '1'
         run: python fb_f5grade.py
+
+      # 29 ต.ค. 69: อ่านแคชของ fb-cache แทนดึงเอง (ตลาดเดียวกัน) — ประหยัดเครดิต ScrapingAnt ~240/วัน
+      #   cron เลื่อนมาที่ 41 1,7,13,19 = ตามหลัง fb-cache (12 นาทีของชั่วโมงเดียวกัน) แคชสดเสมอ
+      #   แคชเก่า/ไม่ครอบวัน fb_report ดึงเองแบบเดิม (ดู _cache ใน fb_report.py)
+      - name: เอาแคชคู่บอลของ fb-cache มา
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: fb_day_cache.json.gz
+          key: fbcache-
+          restore-keys: fbcache-
 
       - name: สร้างหน้ารายงาน
         env:
