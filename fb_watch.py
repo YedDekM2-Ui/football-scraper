@@ -183,13 +183,17 @@ def fb_days():
     return [(t - timedelta(days=1)).isoformat(), t.isoformat(), (t + timedelta(days=1)).isoformat()]
 
 
+LGS = {}   # ตารางลีกของรอบดึงล่าสุด — แคชเก็บไว้ให้ fb_report ใช้ชื่อลีกเต็ม
+
+
 def fetch_fb(route):
     """ดึงรายการคู่ Forebet ของเมื่อวาน+วันนี้+พรุ่งนี้ (3 ตลาดที่กฎใช้จริง)"""
     fb = {}
     for d in fb_days():
         try:
-            ms, _ = fbapi.fb_fetch_day(d, markets=("1x2", "uo", "bts"), sess=route)
+            ms, lg = fbapi.fb_fetch_day(d, markets=("1x2", "uo", "bts"), sess=route)
             fb.update(ms)
+            LGS.update(lg or {})
         except Exception as e:
             print(f"⚠️ Forebet {d}: {e}", flush=True)
     return fb
@@ -203,12 +207,14 @@ def cache_build():
     fb = fetch_fb(fbapi.fb_session())
     if not fb:
         print("❌ ดึง Forebet ไม่ได้เลย — ไม่เขียนทับแคชเดิม", flush=True)
+        stale_alert()
         return 1
     # _mkt เป็น set() — JSON ไม่รับ ต้องแปลงเป็น list ก่อน
     slim = {k: {kk: (sorted(vv) if isinstance(vv, set) else vv) for kk, vv in v.items()}
             for k, v in fb.items()}
     blob = json.dumps({"built": datetime.now().isoformat(timespec="seconds"),
                        "days": fb_days(),
+                       "lgs": LGS,
                        "fb": slim}, ensure_ascii=False).encode("utf-8")
     tmp = CACHE + ".tmp"
     with gzip.open(tmp, "wb") as f:
@@ -216,6 +222,30 @@ def cache_build():
     os.replace(tmp, CACHE)
     print(f"✅ แคช {len(fb)} คู่ → {os.path.basename(CACHE)} ({os.path.getsize(CACHE)/1024:.0f} KB)", flush=True)
     return 0
+
+
+def stale_alert():
+    """แคชเก่าเกิน 1 วัน = บอกเจ้าของทางเทเลแกรม (วันละใบ ไม่รัวทุกรอบ)
+
+    ทำไม: ดึง Forebet ไม่ได้ = workflow ยังเขียว ตัวเฝ้าแค่เงียบ — เคยเงียบ 18 วัน (ก.ย.)
+    และ 2 วัน (27 ต.ค. 69 คีย์ ScrapingAnt หมด) โดยไม่มีใครรู้
+    ไม่มีที่จดว่าเตือนไปแล้ว → ใช้อายุแคชแทน: ส่งเฉพาะรอบที่อายุตก [24, 30) · [48, 54) ...
+    งานนี้รันทุก 6 ชม. จึงโดนวันละรอบพอดี (cron หายรอบ = วันนั้นข้ามไป ไม่เป็นไร)
+    """
+    try:
+        with gzip.open(CACHE, "rb") as f:
+            built = json.loads(f.read().decode("utf-8")).get("built")
+        age = (datetime.now() - datetime.fromisoformat(built)).total_seconds() / 3600
+    except Exception as e:
+        print(f"⚠️ อ่านอายุแคชเดิมไม่ได้ ({e}) — ไม่เตือน", flush=True)
+        return
+    print(f"⏳ แคชเดิมอายุ {age:.1f} ชม.", flush=True)
+    if age < 24 or (age - 24) % 24 >= 6:
+        return
+    ok = send(f"⚠️ FABEL5 ดึง Forebet ไม่ได้มา {age / 24:.0f} วันแล้ว — ใบเตือนบอลจะเงียบ\n"
+              f"แคชล่าสุด {built} UTC\n"
+              "เช็ค: ?p=ffdiag (ถ้าเห็น quota limit = คีย์ ScrapingAnt หมดทุกใบ)")
+    print(f"📣 เตือนแคชเก่า → {'ส่งแล้ว' if ok else 'ส่งไม่ผ่าน'}", flush=True)
 
 
 def cache_load():
