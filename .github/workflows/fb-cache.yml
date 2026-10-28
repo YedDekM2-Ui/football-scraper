@@ -33,9 +33,19 @@ jobs:
           python-version: '3.11'
       - run: pip install requests
 
+      # แคชรอบก่อน — ไว้ดูอายุตอนดึงไม่ได้ (เก่าเกิน 1 วัน = เตือนเทเลแกรม วันละใบ)
+      # ดึงได้ = เขียนทับด้วยของใหม่ตามปกติ
+      - name: เอาแคชรอบก่อนมา
+        uses: actions/cache/restore@v4
+        with:
+          path: fb_day_cache.json.gz
+          key: fbcache-
+          restore-keys: fbcache-
+
       - name: ดึง Forebet (fb_session อ้อม ?ff= ให้เองเมื่อโดนเด้ง)
         env:
           PIKTAX_STATE_URL: ${{ secrets.PIKTAX_STATE_URL }}
+          PIKTAX_ADMIN_KEY: ${{ secrets.PIKTAX_ADMIN_KEY }}
           PYTHONUTF8: '1'
         run: |
           python fb_watch.py --build-cache | tee cache.log
