@@ -213,9 +213,10 @@ def moviodds_load(timeout=20):
         return []
 
 
-def mo_price(m, mo):
-    """หาราคา 1X2 ของคู่นี้ใน MoviOdds · ไม่ชัวร์ = คืน None (ไม่เดา)"""
-    ko = _ko_bkk(m)
+def mo_price(m, mo, ko=None):
+    """หาราคา 1X2 ของคู่นี้ใน MoviOdds · ไม่ชัวร์ = คืน None (ไม่เดา)
+    ko = เวลาเตะ (มีโซนเวลา) ถ้าตัวเรียกรู้อยู่แล้ว — fb_stat ส่งมาเอง เพราะแถวของ fb_report ไม่มี DATE_BAH"""
+    ko = ko or _ko_bkk(m)
     if not mo or ko is None:
         return None
     ko = ko.astimezone(timezone.utc)
