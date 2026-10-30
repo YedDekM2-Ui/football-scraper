@@ -207,12 +207,19 @@ def card_html(kind):
 
 
 # ── ตาราง ────────────────────────────────────────────────────────────────────
+# ป้ายที่ถอดออกจากหน้าแล้ว (31 ต.ค. 69 · ผลจริงที่ fb_stat จดก่อนเตะ 18 ส.ค.–31 ต.ค.)
+#   UN  1,520 ใบ เข้า 49.9% กำไร/ไม้ −9.3% (คลังบอก 53.7%) แย่ลงทุกเดือน
+#   SC  5,792 ใบ เป๊ะ 6.8% (คลังบอก 8.5%) ลดทุกเดือน
+# ยังคำนวณอยู่เบื้องหลัง (level() ใช้ SC แบ่งระดับกลาง · fb_stat ยังจดไว้วัดต่อ) แค่ไม่โชว์/ไม่ให้กรอง
+HIDDEN = ("under", "score")
+
+
 def tag_pills(d):
     out = ""
-    for k, lab in (("over", "OV"), ("under", "UN"), ("1x2", "1X"), ("score", "SC")):
+    for k, lab in (("over", "OV"), ("1x2", "1X")):
         if d.get(f"_ok_{k}"):
-            # UN กับ 1X ปิดแล้ว (วัดแล้วขาดทุน) — ยังโชว์ไว้ให้เห็น แต่ขีดฆ่า
-            off = " off" if k in ("under", "1x2") else ""
+            # 1X ปิดแล้ว (วัดแล้วขาดทุน) — ยังโชว์ไว้ให้เห็น แต่ขีดฆ่า
+            off = " off" if k == "1x2" else ""
             out += f'<span class="pill {k}{off}">{lab}</span>'
     return out or '<span class="mut">–</span>'
 
@@ -271,7 +278,7 @@ for d in rows:
     # บอลรอง = ฝั่งที่ Forebet ทาย เป็นฝั่งราคาแพงสุดในสามช่อง
     oo = [x for x in d["o"] if x]
     dog = top is not None and len(oo) == 3 and d["o"][top] == max(oo)
-    tags = " ".join(k for k in PICKERS if d.get(f"_ok_{k}"))
+    tags = " ".join(k for k in PICKERS if d.get(f"_ok_{k}") and k not in HIDDEN)
     if ev is not None and ev >= 30:
         tags = (tags + " ev30" + (" dog30" if dog else "")).strip()
     if "_vb" in d:
@@ -313,7 +320,15 @@ STAT = ""
 try:
     import fb_stat
     if LIVE:
-        fb_stat.record(rows, level, edge)
+        # ราคา MoviOdds = ราคาเจ้ามือจริง ไว้วัดค่าคุ้มแทนราคา Forebet ที่เพี้ยน (31 ต.ค. 69)
+        # ดึงไม่ได้ = [] → จดเหมือนเดิม แค่ไม่มีช่อง mo
+        try:
+            import fb_value
+            mo = fb_value.moviodds_load()
+        except Exception as e:
+            print(f"⚠️ MoviOdds ไม่มา ({type(e).__name__}) → จดสถิติแบบไม่มีราคาเจ้ามือ")
+            mo = []
+        fb_stat.record(rows, level, edge, mo=mo)
         fb_stat.grade()
     STAT = fb_stat.stat_html()
 except Exception as e:
@@ -663,12 +678,8 @@ GLOSS = [
 GLOSS_TAG = [
     ("over", "🔺 OV", "บอลสูง", "gavg ≥ 2.70 + pro ≥ 70% + ราคาสูง 1.60–2.10",
      "วัดแล้ว <b>+1.1%</b> (ตลาดเดียวที่เป็นบวก)"),
-    ("under", "🔻 UN", "บอลต่ำ", "gavg ≤ 2.20 + pru ≥ 65% + ราคาต่ำ 1.60–2.10",
-     "วัดแล้ว <b>−3.7%</b> — ดูได้ ไม่แนะนำให้ลง"),
     ("1x2", "🎯 1X", "แพ้/ชนะ/เสมอ", "ฝั่งที่ทาย ≥ 50% + ไม่กระจาย + ตรงทางสกอร์ + Coef 1.60–2.10",
      "วัดแล้ว <b>−5.4%</b> — ด่านนี้แย่ที่สุด"),
-    ("score", "🎱 SC", "สกอร์เป๊ะ", "ตรงทางสกอร์ + ทายห่างกัน 2 ลูก (ตัดบอลถ้วย)",
-     "เป๊ะ <b>8.5%</b> — ใช้เป็นสัญญาณว่า Forebet มั่นใจ ไม่ใช่ไว้แทงสกอร์"),
 ]
 gloss_rows = "".join(
     f'<div class="gr"><div class="gk mono">{E(k)}</div>'
@@ -702,9 +713,7 @@ HTML = f"""<!doctype html>
     <span class="stat">🟢 น่าลงทุนสุด <b>{sum(1 for d in rows if level(d) == 3)}</b></span>
     <span class="stat">🟡 กลาง <b>{sum(1 for d in rows if level(d) == 2)}</b></span>
     <span class="stat">🔺 สูง <b>{cnt['over']}</b></span>
-    <span class="stat">🔻 ต่ำ <b>{cnt['under']}</b></span>
     <span class="stat">🎯 1X2 <b>{cnt['1x2']}</b></span>
-    <span class="stat">🎱 สกอร์ <b>{cnt['score']}</b></span>
   </div>
 </header>
 
@@ -849,11 +858,13 @@ HTML = f"""<!doctype html>
   <div class="note ok"><b>ถ้าจะเหลือไว้แค่เส้นเดียว เอา 🐶 รอง + ค่าคุ้ม ≥30%</b> —
     <b>+65.6%</b> ต่อใบ · 5.7 ใบ/วัน · มากกว่าทุกด่านเดิมรวมกันหลายเท่า<br>
     (โค้ดตัวเตือนสด <span class="mono">fb_watch.py</span> คนละตัว ไม่โดนกระทบ)</div>
-  <div class="note bad"><b>✅ ปิดให้แล้วในหน้านี้:</b> ถอดปุ่ม <b>🎯 1X</b> กับ <b>🔻 UN</b>
-    ออกจากแถบกรองแล้ว · ป้ายในช่อง “ผ่านด่าน” ยัง<b>โชว์อยู่แต่ขีดฆ่า</b>
-    <span class="pill under off">UN</span> <span class="pill 1x2 off">1X</span>
-    — จะได้ยังเห็นว่าคู่นั้นเข้าเงื่อนไขอะไรบ้าง แต่รู้ว่า<b>ไม่ใช่เหตุผลให้ลงเงิน</b><br>
-    เหลือปุ่มที่ใช้ตัดสินจริง: <b>🔺 OV · 🎱 SC · 💰 ค่าคุ้ม ≥30 · 🐶 รอง+ค่าคุ้ม ≥30</b></div>
+  <div class="note bad"><b>✅ ปิดให้แล้วในหน้านี้:</b> ปุ่ม <b>🎯 1X</b> ถอดออกจากแถบกรอง
+    ป้ายยัง<b>โชว์อยู่แต่ขีดฆ่า</b> <span class="pill 1x2 off">1X</span><br>
+    <b>31 ต.ค. 69 ถอด 🔻 UN กับ 🎱 SC ออกทั้งหมด</b> (ไม่โชว์ป้าย · ไม่มีปุ่ม · ไม่มีการ์ด) —
+    ผลจริงที่จดก่อนเตะ 18 ส.ค.–31 ต.ค.: UN 1,520 ใบ เข้า 49.9% กำไร/ไม้ −9.3% ·
+    SC 5,792 ใบ เป๊ะ 6.8% ทั้งคู่<b>แย่กว่าคลัง และแย่ลงทุกเดือน</b><br>
+    เหลือปุ่มที่ใช้ตัดสินจริง: <b>🔺 OV · 💰 ค่าคุ้ม ≥30 · 🐶 รอง+ค่าคุ้ม ≥30</b>
+    (ค่าคุ้มดูกล่องสถิติจริงข้างล่างก่อน — ราคาจาก Forebet เพี้ยน)</div>
 </section>
 
 <section>
@@ -891,13 +902,13 @@ HTML = f"""<!doctype html>
 <section>
   <div><p class="eyebrow">หน้าตาการ์ด</p><h2>ตัวอย่างจริงจากคู่วันนี้</h2>
   <p class="lede">รูปแบบตามที่เขียนมาให้ เพิ่มบรรทัด 📊 กับบรรทัดเตือนตามผลวัดข้างบน</p></div>
-  <div class="cards">{card_html('over')}{card_html('under')}{card_html('1x2')}{card_html('score')}</div>
+  <div class="cards">{card_html('over')}{card_html('1x2')}</div>
 </section>
 
 <section>
   <div><p class="eyebrow">คำถามที่ถามมา</p><h2>ตัวย่อในตาราง อ่านยังไง</h2></div>
   <div class="panel">{gloss_rows}</div>
-  <div class="panel"><h3>ป้าย “ผ่านด่าน” 4 แบบ</h3>{gtag_rows}</div>
+  <div class="panel"><h3>ป้าย “ผ่านด่าน” ที่ยังโชว์ (🔻 UN · 🎱 SC ถอดออกแล้ว)</h3>{gtag_rows}</div>
   <div class="panel"><h3>สีบนตาราง</h3>
     <div class="gr"><div class="gk"><span class="sw b">42</span></div>
       <div class="gv">น้ำเงินหนา = ฝั่งที่ Forebet ทายว่าจะเป็นผล</div></div>
@@ -920,8 +931,8 @@ HTML = f"""<!doctype html>
         <span class="gx">OV+1X <b class="num down">−2.0%</b> ·
           🔻 UN <b class="num down">−3.7%</b> ·
           🎯 1X <b class="num down">−5.4%</b> — วัดแล้วติดลบ จึงไม่ทาสีให้</span></div></div>
-    <p class="lede" style="font-size:12.5px">ป้าย 🔻 UN / 🎯 1X / 🎱 SC ยังโชว์อยู่เหมือนเดิม
-      แค่ไม่ได้ไฮไลท์ — ดูได้ แต่ตัวเลขย้อนหลังไม่หนุนให้ลงเงิน</p>
+    <p class="lede" style="font-size:12.5px">ป้าย 🎯 1X ยังโชว์ (ขีดฆ่า) แค่ไม่ได้ไฮไลท์ —
+      ดูได้ แต่ตัวเลขไม่หนุนให้ลงเงิน · 🔻 UN กับ 🎱 SC ถอดออกแล้ว 31 ต.ค. 69</p>
   </div>
 </section>
 
@@ -937,7 +948,6 @@ HTML = f"""<!doctype html>
     <button class="fb hi2" data-f="lv2">🟡 กลาง</button>
     <button class="fb" data-f="any">ผ่านด่าน</button>
     <button class="fb" data-f="over">🔺 OV</button>
-    <button class="fb" data-f="score">🎱 SC</button>
     <button class="fb" data-f="ev30">💰 ค่าคุ้ม ≥30</button>
     <button class="fb hi3" data-f="dog30">🐶 รอง + ค่าคุ้ม ≥30</button>
     <button class="fb" data-f="vb">⭐ อยู่บนหน้า values ({nvb})</button>
