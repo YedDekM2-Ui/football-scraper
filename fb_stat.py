@@ -113,8 +113,8 @@ def record(rows, level_fn, edge_fn, now=None, mo=None):
     """จดใบของคู่ที่ยังไม่เตะ · คู่เดิมจดครั้งเดียว (กันรอบถัดไปจดซ้ำ)"""
     now = now or datetime.now(BKK)
     recs = _load()
-    have = {(r.get("d"), str(r.get("id"))) for r in recs}
-    add = 0
+    have = {(r.get("d"), str(r.get("id"))): r for r in recs}
+    add = fill = 0
     for d in rows:
         ko = d.get("ko")
         if not ko or ko <= now:
@@ -127,6 +127,12 @@ def record(rows, level_fn, edge_fn, now=None, mo=None):
             continue                                   # ไม่ผ่านอะไรเลย = ไม่ต้องจด
         key = (ko.date().isoformat(), str(d["id"]))
         if key in have:
+            # ใบที่จดไว้ก่อนมีช่อง mo (ก่อน 31 ต.ค. 69) แต่ยังไม่เตะ → เติมราคาเจ้ามือให้
+            # ปลอดภัย: ยังไม่เตะ = ยังไม่รู้ผล ไม่ใช่การเลือกใบทีหลัง
+            old = have[key]
+            if "mo" not in old and mo_o is not None:
+                old["mo"], old["evm"] = mo_o, evm
+                fill += 1
             continue
         oo = [x for x in d["o"] if x]
         top = d.get("top")
@@ -142,11 +148,11 @@ def record(rows, level_fn, edge_fn, now=None, mo=None):
             "at": f"{now:%Y-%m-%d %H:%M}",
             "r": None,
         })
-        have.add(key)
+        have[key] = recs[-1]
         add += 1
-    if add:
+    if add or fill:
         _save(recs)
-    print(f"📝 สถิติออโต้: จดใหม่ {add} ใบ (ทั้งแฟ้ม {len(recs)} ใบ)")
+    print(f"📝 สถิติออโต้: จดใหม่ {add} ใบ · เติมราคา MoviOdds {fill} ใบ (ทั้งแฟ้ม {len(recs)} ใบ)")
     return add
 
 
