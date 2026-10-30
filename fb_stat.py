@@ -31,11 +31,15 @@ GROUPS = [
     ("lv3",   "🟢 น่าลงทุนสุด — OV ป้ายเดียวโดดๆ", 1995, 57.0, +2.0),
     ("lv2",   "🟡 พอไปดูได้ — OV + SC",             1203, 56.8, +0.8),
     ("over",  "🔺 OV ทุกใบ",                        None, None, None),
-    ("under", "🔻 UN",                              None, None, None),
     ("1x2",   "🎯 1X",                              None, None, None),
-    ("score", "🎱 SC — สกอร์เป๊ะ",                   None, None, None),
-    ("ev30",  "💰 ค่าคุ้ม >=30%",                    4630, 34.4, +30.3),
-    ("dog30", "🐶 รอง + ค่าคุ้ม >=30%",              2092, 32.5, +65.6),
+    ("ev30",  "💰 ค่าคุ้ม >=30% · ราคา Forebet (เพี้ยน เชื่อไม่ได้)", 4630, 34.4, +30.3),
+    ("dog30", "🐶 รอง + ค่าคุ้ม >=30% · ราคา Forebet (เพี้ยน)",       2092, 32.5, +65.6),
+    # 31 ต.ค. 69: ราคา 1X2 ของ Forebet เพี้ยน — เต็งราคา <1.30 ชนะแค่ 68% (ควร 80%+)
+    #   ราคา 15+ เข้า 46% · เจอใบสลับข้าง (Stuttgart U19 ราคา 41 ทั้งที่เป็นเต็ง)
+    #   → กำไร ev30 +60% / dog30 +110% ที่วัดได้เป็นของปลอมจากราคาเพี้ยน
+    #   วัดใหม่ด้วยราคาเจ้ามือจริงจาก MoviOdds (จดตั้งแต่ 31 ต.ค. 69) ไม่มีคลังให้เทียบ
+    ("ev30m",  "💰 ค่าคุ้ม >=30% · ราคา MoviOdds",       None, None, None),
+    ("dog30m", "🐶 รอง + ค่าคุ้ม >=30% · ราคา MoviOdds", None, None, None),
 ]
 
 
@@ -46,6 +50,8 @@ def _base(key):
             if n is not None:
                 return n, hit, roi
             from fb_pick import RULES
+            if key not in RULES:
+                return None, None, None             # กลุ่มใหม่ ยังไม่มีคลังให้เทียบ
             r = RULES[key]
             return r["n"], r["hit"], r["roi"]
     return None, None, None
@@ -86,7 +92,24 @@ def _save(recs):
 
 
 # ── จด ────────────────────────────────────────────────────────────────────────
-def record(rows, level_fn, edge_fn, now=None):
+def _mo_rec(d, mo):
+    """ราคา MoviOdds [1,X,2] + ค่าคุ้มของฝั่งที่ Forebet ทาย (สูตรเดียวกับ edge ของ fb_report)
+    จับคู่ไม่ชัวร์ = (None, None) ไม่เดา"""
+    if not mo:
+        return None, None
+    import fb_value
+    px = fb_value.mo_price({"HOST_NAME": d.get("host"), "GUEST_NAME": d.get("guest")}, mo, ko=d.get("ko"))
+    if not px:
+        return None, None
+    o = [px["1"], px["X"], px["2"]]
+    top = d.get("top")
+    p = (d.get("p") or [None, None, None])[top] if top is not None else None
+    if p is None or not o[top] or o[top] <= 1:
+        return o, None
+    return o, round(max(0.0, (p / 100 * o[top] - 1) / (o[top] - 1) * 100), 1)
+
+
+def record(rows, level_fn, edge_fn, now=None, mo=None):
     """จดใบของคู่ที่ยังไม่เตะ · คู่เดิมจดครั้งเดียว (กันรอบถัดไปจดซ้ำ)"""
     now = now or datetime.now(BKK)
     recs = _load()
@@ -99,7 +122,8 @@ def record(rows, level_fn, edge_fn, now=None):
         tg = [k for k in ("over", "under", "1x2", "score") if d.get(f"_ok_{k}")]
         ev = edge_fn(d)
         ev = -1.0 if ev is None else round(ev, 1)
-        if not tg and ev < 30:
+        mo_o, evm = _mo_rec(d, mo)
+        if not tg and ev < 30 and (evm is None or evm < 30):
             continue                                   # ไม่ผ่านอะไรเลย = ไม่ต้องจด
         key = (ko.date().isoformat(), str(d["id"]))
         if key in have:
@@ -113,6 +137,7 @@ def record(rows, level_fn, edge_fn, now=None):
             "dog": bool(top is not None and len(oo) == 3 and d["o"][top] == max(oo)),
             "top": top, "o": [round(x, 2) if x else None for x in d["o"]],
             "bo": d.get("bo"), "bu": d.get("bu"),
+            "mo": mo_o, "evm": evm,                    # ราคา MoviOdds · None = จับคู่ไม่ได้
             "pr": [d.get("hpr"), d.get("gpr")],
             "at": f"{now:%Y-%m-%d %H:%M}",
             "r": None,
@@ -187,6 +212,13 @@ def _member(r, key):
         return (r.get("ev") or -1) >= 30
     if key == "dog30":
         return (r.get("ev") or -1) >= 30 and r.get("dog")
+    if key in ("ev30m", "dog30m"):
+        if (r.get("evm") or -1) < 30:
+            return False
+        if key == "ev30m":
+            return True
+        mo, top = r.get("mo") or [], r.get("top")
+        return top is not None and len(mo) == 3 and mo[top] == max(mo)
     return key in (r.get("tg") or [])
 
 
@@ -206,6 +238,12 @@ def _outcome(r, key):
     if key == "score":
         pr = r.get("pr") or [None, None]
         return ((hs, gs) == (pr[0], pr[1]), None) if pr[0] is not None else None
+    if key in ("ev30m", "dog30m"):
+        top, o = r.get("top"), r.get("mo") or []
+        if top is None or len(o) != 3 or not o[top]:
+            return None
+        side = 0 if hs > gs else (1 if hs == gs else 2)
+        return (side == top, o[top])
     if key in ("1x2", "ev30", "dog30"):
         top, o = r.get("top"), r.get("o") or []
         if top is None or len(o) != 3 or not o[top]:
@@ -253,6 +291,12 @@ def _num(v, plus=False):
            f'<span class="num {c}">{v:.1f}%</span>'
 
 
+def _basetxt(bh, br):
+    if bh is None:
+        return "ไม่มีคลังเทียบ (เริ่มจด 31 ต.ค. 69)"
+    return f"คลัง {bh:.1f}%" + (f" · {br:+.1f}%" if br is not None else "")
+
+
 def stat_html():
     recs = _load()
     if not recs:
@@ -271,12 +315,15 @@ def stat_html():
                 f'<div class="step"><div class="si"></div><div class="sl"><span>{nm}</span>'
                 f'<span class="chip flat">ยังไม่มีใบที่รู้ผล</span></div>'
                 f'<div class="sr"><span class="sn">รอผล {t["pend"]} ใบ</span>'
-                f'<span class="sn">คลัง {bh:.1f}%'
-                + (f" · {br:+.1f}%" if br is not None else "") + "</span></div></div>")
+                f'<span class="sn">{_basetxt(bh, br)}</span></div></div>')
             continue
         # เทียบกับคลัง: ใบยังน้อย = ห้ามสรุป (ตัวเลขเด้งเป็นสิบ % จากใบเดียว)
         if t["n"] < 30:
             chip = '<span class="chip flat">ใบยังน้อย ยังสรุปไม่ได้</span>'
+        elif bh is None:                       # กลุ่มใหม่ไม่มีคลัง → ดูแค่ว่ากำไรหรือขาดทุน
+            chip = ('<span class="chip flat">วัดกำไรไม่ได้</span>' if t["roi"] is None else
+                    '<span class="chip ok">กำไร</span>' if t["roi"] > 0 else
+                    '<span class="chip bad">ขาดทุน</span>')
         else:
             mine = t["hit"] if br is None else t["roi"]
             base = bh if br is None else br
@@ -291,8 +338,7 @@ def stat_html():
             f'<div class="sl"><span>{nm}</span>{chip}</div>'
             f'<div class="sr"><span class="sn">{t["win"]}/{t["n"]} ใบ</span>'
             f'{_num(t["hit"])}{_num(t["roi"], True)}'
-            f'<span class="sn">คลัง {bh:.1f}%'
-            + (f" · {br:+.1f}%" if br is not None else "") + "</span>"
+            f'<span class="sn">{_basetxt(bh, br)}</span>'
             + (f'<span class="sn">รอผล {t["pend"]}</span>' if t["pend"] else "")
             + "</div></div>")
 
