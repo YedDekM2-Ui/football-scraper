@@ -394,12 +394,53 @@ def _bet(m, mkt, head):
             "")
 
 
+# ── ผลจริงของใบเตือนที่ส่งไปแล้ว (ชีต FABEL5 ผ่าน f5dump) ─────────────────────
+# ทำไม: 31 ต.ค. 69 เกรดแล้ว 351 ใบ เลขคลังที่โชว์บนการ์ดสูงกว่าผลจริง 4–7 จุด ใน 3 ตลาด
+#       (bts1_g1 โชว์ 92.1 จริง 86.3 · lv_nolose 89.8→85.4 · over_g1 91.2→83.9)
+#       → ตลาดไหนมีใบจริงพอ ให้โชว์ผลจริงเป็นเลขหลัก เลขคลังเหลือแค่ท้ายวงเล็บ
+# เลขนี้ใช้ "โชว์" อย่างเดียว ไม่ใช้ตัดสินว่าจะเตือนไหม (ด่านยังเป็นของ fb_trust เหมือนเดิม)
+# meta.hit ที่ส่งเข้าชีตยังเป็นเลขคลัง — /สถิติเตือน จะได้เทียบ "คลังบอก vs จริง" ต่อได้
+LIVE_MIN_N = 20
+LIVE = {}
+
+
+def load_live():
+    """คืน {ตลาด: (เข้า, เกรดแล้ว)} · ดึงไม่ได้ = {} (การ์ดกลับไปโชว์เลขคลังแบบเดิม ไม่ล้ม)"""
+    u, k = _piktax_url(), _admin_key()
+    if not u or not k:
+        return {}
+    try:
+        r = requests.get(u, params={"admin": k, "action": "f5dump"}, timeout=90)
+        out = {}
+        for line in r.text.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            d = json.loads(line)
+            if d.get("res") is None:
+                continue
+            w, n = out.get(d.get("mkt"), (0, 0))
+            out[d.get("mkt")] = (w + (1 if d["res"] else 0), n + 1)
+        return out
+    except Exception as e:
+        print(f"⚠️ อ่านผลจริงใบเตือนไม่ได้ (โชว์เลขคลังแทน): {e}", flush=True)
+        return {}
+
+
+def _stat_line(mkt, hit, n, base):
+    r = RULES[mkt]
+    w, ln = LIVE.get(mkt, (0, 0))
+    if ln >= LIVE_MIN_N:
+        return f"ใบเตือนจริงเข้า {w}/{ln} = {w * 100 / ln:.1f}% (คลังย้อนหลังบอก {hit:.1f}%)"
+    # ตลาด gate=global ไม่มีเลขรายลีก → โชว์เลขรวมตรงๆ ห้ามแกล้งทำเป็นเลขรายลีก
+    return (f"วัดรวมทุกลีก {hit:.1f}% ({n:,} คู่)" if r["gate"] == "global"
+            else f"ลีกนี้เข้า {hit:.1f}% (วัด {n} คู่) · ทุกลีก {base:.1f}%")
+
+
 def fmt(m, mkt, head, why, hit, n, base, minute):
     r = RULES[mkt]
     lg = ((m.get("short_tag") or "?"), str(m.get("code") or "??").upper())
-    # ตลาด gate=global ไม่มีเลขรายลีก → โชว์เลขรวมตรงๆ ห้ามแกล้งทำเป็นเลขรายลีก
-    stat = (f"วัดรวมทุกลีก {hit:.1f}% ({n:,} คู่)" if r["gate"] == "global"
-            else f"ลีกนี้เข้า {hit:.1f}% (วัด {n} คู่) · ทุกลีก {base:.1f}%")
+    stat = _stat_line(mkt, hit, n, base)
     rpre, rpost = _red(m)
     win, slip, ban = _bet(m, mkt, head)
     return (
@@ -676,6 +717,10 @@ def main():
     print(f"🧠 ตัวกรองรายลีก {sum(1 for x in trust if not x.startswith('_'))} ลีก · "
           + " · ".join(bits), flush=True)
     print(f"⏱️ เตือนเฉพาะนาที {MIN_FROM}-{MIN_TO} (ช่วงที่ตัวเลขวัดมาตรงจริง)", flush=True)
+
+    LIVE.update(load_live())
+    print("🧾 ผลจริงใบเตือน: " + (" · ".join(f"{k} {w}/{n}" for k, (w, n) in LIVE.items()) or "อ่านไม่ได้"),
+          flush=True)
 
     seen = load_seen()
     # โหมดอ่านแคชไม่แตะ Forebet เลย — ไม่ต้องเปิดเส้นทาง (ไม่งั้นโดน 403 ทุก 5 นาที วันละ 288 ครั้ง)
