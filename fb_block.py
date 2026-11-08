@@ -18,6 +18,7 @@ BLOCK = [
     "DeW",   # [DE] เยอรมนี หญิง
     "De5",   # [DE] เยอรมนี ลีกภูมิภาค (Oberliga)
     "Cz4",   # [CZ] เช็ก ดิวิชั่นล่าง
+    "De4",   # [DE] เยอรมนี Regionalliga — ปิด 8 พ.ย. 69 เจ้าของสั่ง (เปลืองโทเคน)
 ]
 
 _SET = {b.strip().upper() for b in BLOCK if b.strip()}
