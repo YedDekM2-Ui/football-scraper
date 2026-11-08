@@ -403,9 +403,23 @@ def _bet(m, mkt, head):
 LIVE_MIN_N = 20
 LIVE = {}
 
+# ── ปิดลีกที่ "ใบเตือนจริง" เข้าน้อย (8 พ.ย. 69 เจ้าของสั่ง: ลงเฉพาะลีกที่แม่น) ─────
+# ต่างจากด่าน fb_trust ตรงที่ตัวนี้ดูผลจริงของใบที่ส่งไปแล้ว ไม่ใช่คลังย้อนหลัง
+#   ทำไม: คลังโชว์ 92.7% แต่ของจริงบางลีกเข้า 10/14 (Bo1 · lg 111) — ด่านคลังจับไม่ได้
+# นับรวมทุกตลาดของลีกนั้น (รายตลาด n บางเกิน ลีกละ 3-5 ใบ) · ลีก = league_id ตามที่จดในชีต
+# ปิด/เปิดเองตามผลล่าสุดทุกรอบ ไม่มีรายชื่อตายตัว — ลีกกลับมาแม่นก็ไม่ได้ปิดถาวร แต่จะไม่มีใบใหม่
+#   มาดันเลขขึ้น = ปิดค้างจริงๆ ถ้าอยากเปิดคืนต้องลบแถวผิดหรือแก้เกณฑ์ที่นี่
+# วัดตอนตั้ง (418 ใบเกรดแล้ว รวม 85.9%): ปิด lg 111/713/408 → ที่เหลือเข้า 87.5%
+LG_MIN_N = 5        # ใบจริงน้อยกว่านี้ยังไม่ตัดสินลีก (ปล่อยให้ด่านคลังทำงานไป)
+LG_MIN_HIT = 80.0   # ต่ำกว่านี้ = ปิด (ของจริงรวมทุกลีก ~86%)
+LIVE_LG = {}
+
 
 def load_live():
-    """คืน {ตลาด: (เข้า, เกรดแล้ว)} · ดึงไม่ได้ = {} (การ์ดกลับไปโชว์เลขคลังแบบเดิม ไม่ล้ม)"""
+    """คืน {ตลาด: (เข้า, เกรดแล้ว)} · ดึงไม่ได้ = {} (การ์ดกลับไปโชว์เลขคลังแบบเดิม ไม่ล้ม)
+
+    ผลพลอยได้: เติม LIVE_LG = {league_id: (เข้า, เกรดแล้ว)} ไว้ให้ live_lg_bad() ใช้
+    """
     u, k = _piktax_url(), _admin_key()
     if not u or not k:
         return {}
@@ -421,10 +435,23 @@ def load_live():
                 continue
             w, n = out.get(d.get("mkt"), (0, 0))
             out[d.get("mkt")] = (w + (1 if d["res"] else 0), n + 1)
+            lg = str(d.get("lg") if d.get("lg") is not None else "").strip()
+            if lg:
+                w, n = LIVE_LG.get(lg, (0, 0))
+                LIVE_LG[lg] = (w + (1 if d["res"] else 0), n + 1)
         return out
     except Exception as e:
         print(f"⚠️ อ่านผลจริงใบเตือนไม่ได้ (โชว์เลขคลังแทน): {e}", flush=True)
         return {}
+
+
+def live_lg_bad(lg):
+    """คืนข้อความ "เข้า w/n" ถ้าลีกนี้ใบจริงเข้าน้อยจนต้องปิด · None = เตือนได้
+    อ่านผลจริงไม่ได้ (LIVE_LG ว่าง) = ไม่ตัด — ด่านคลังยังกันอยู่ ไม่ใช่ทางเดียว"""
+    w, n = LIVE_LG.get(str(lg if lg is not None else "").strip(), (0, 0))
+    if n >= LG_MIN_N and w * 100.0 / n < LG_MIN_HIT:
+        return f"{w}/{n}"
+    return None
 
 
 def _stat_line(mkt, hit, n, base):
@@ -656,6 +683,11 @@ def sweep(route, trust, base, gall, seen, dry):
         if bl:
             skipped_lg[bl] = skipped_lg.get(bl, 0) + 1
             continue              # เว็บไม่เปิดให้แทงลีกนี้ — ใบสวยแค่ไหนก็ลงไม่ได้
+        lb = live_lg_bad(m.get("league_id"))
+        if lb:
+            k = f"[{str(m.get('code') or '').upper()}] {m.get('short_tag') or '?'} (lg {m.get('league_id')} จริงเข้า {lb})"
+            skipped_lg[k] = skipped_lg.get(k, 0) + 1
+            continue              # ลีกนี้ใบจริงเข้าน้อย — ปิดตามที่เจ้าของสั่ง
         # หลายกฎยิงคู่เดียวกันได้ (เช่น ยิงข้างเดียว 1-0 เข้าทั้ง bts1_g1 และ over_g1)
         # → ส่งใบเดียว เอาอันที่วัดได้แม่นสุด
         cand = []
@@ -721,6 +753,9 @@ def main():
     LIVE.update(load_live())
     print("🧾 ผลจริงใบเตือน: " + (" · ".join(f"{k} {w}/{n}" for k, (w, n) in LIVE.items()) or "อ่านไม่ได้"),
           flush=True)
+    bad = sorted(k for k in LIVE_LG if live_lg_bad(k))
+    print(f"🚫 ลีกที่ปิดเพราะใบจริงเข้า <{LG_MIN_HIT:g}% (ใบ≥{LG_MIN_N}): "
+          + (" · ".join(f"lg {k} {live_lg_bad(k)}" for k in bad) or "ไม่มี"), flush=True)
 
     seen = load_seen()
     # โหมดอ่านแคชไม่แตะ Forebet เลย — ไม่ต้องเปิดเส้นทาง (ไม่งั้นโดน 403 ทุก 5 นาที วันละ 288 ครั้ง)
